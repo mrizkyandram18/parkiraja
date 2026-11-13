@@ -5,7 +5,7 @@ spring:
   application:
     name: parkiraja
   datasource:
-    url: jdbc:h2:file:./data/parkiraja;AUTO_SERVER=TRUE;DB_CLOSE_DELAY=-1
+    url: jdbc:h2:file:./data/parkiraja
     driver-class-name: org.h2.Driver
     username: sa
     password: ""

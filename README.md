@@ -23,7 +23,7 @@ The project uses minimal Spring Boot 4 dependencies:
 ## H2 Database Configuration
 
 - **Runtime Mode**: File-persistent storage
-- **JDBC URL**: `jdbc:h2:file:./data/parkiraja;AUTO_SERVER=TRUE;DB_CLOSE_DELAY=-1`
+- **JDBC URL**: `jdbc:h2:file:./data/parkiraja`
 - **Driver**: `org.h2.Driver`
 - **User**: `sa` (empty password)
 - **Data Persistence**: Database files are stored under `./data/` and persist across application restarts. Database files are excluded from Git version control.

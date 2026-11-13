@@ -15,8 +15,11 @@ import com.parkiraja.service.VehicleService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
@@ -43,6 +46,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @SpringBootTest
+@ExtendWith(OutputCaptureExtension.class)
 class VehicleCheckoutIntegrationTest {
 
     @Autowired
@@ -82,14 +86,22 @@ class VehicleCheckoutIntegrationTest {
 
         csvPath = historyWriter.getCsvFilePath();
         if (Files.exists(csvPath)) {
-            Files.deleteIfExists(csvPath);
+            if (Files.isDirectory(csvPath)) {
+                Files.delete(csvPath);
+            } else {
+                Files.deleteIfExists(csvPath);
+            }
         }
     }
 
     @AfterEach
     void tearDown() throws IOException {
         if (csvPath != null && Files.exists(csvPath)) {
-            Files.deleteIfExists(csvPath);
+            if (Files.isDirectory(csvPath)) {
+                Files.delete(csvPath);
+            } else {
+                Files.deleteIfExists(csvPath);
+            }
         }
     }
 
@@ -397,6 +409,77 @@ class VehicleCheckoutIntegrationTest {
                 throw new RuntimeException(e);
             }
         }
+    }
+
+    @Test
+    void shouldHandlePostCommitCsvExportFailureGracefully(CapturedOutput output) throws Exception {
+        // Requirement 4: Simulate CSV synchronization failure AFTER database commit
+        capacityRepository.save(new ParkingCapacity(ParkingCapacity.SINGLETON_ID, 10, LocalDateTime.now()));
+        LocalDateTime entryTime = LocalDateTime.now().minusHours(2);
+        sessionRepository.save(new ParkingSession("B 4040 EXP", VehicleType.CAR, entryTime));
+
+        // Create a directory at csvPath to induce an IOException when writing to the CSV file
+        if (Files.exists(csvPath)) {
+            Files.deleteIfExists(csvPath);
+        }
+        Files.createDirectories(csvPath);
+
+        // 1. Checkout response remains HTTP 200
+        mockMvc.perform(post("/api/v1/parking/check-out")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"licensePlate\": \"B 4040 EXP\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.licensePlate").value("B 4040 EXP"))
+                .andExpect(jsonPath("$.durationHours").value(2))
+                .andExpect(jsonPath("$.hourlyRate").value(5000))
+                .andExpect(jsonPath("$.totalFee").value(10000));
+
+        // 2. Active parking session is removed
+        assertThat(sessionRepository.existsByLicensePlate("B 4040 EXP")).isFalse();
+        assertThat(sessionRepository.count()).isEqualTo(0);
+
+        // 3. Exactly one ParkingHistory record exists in H2
+        List<ParkingHistory> historyList = historyRepository.findAll();
+        assertThat(historyList).hasSize(1);
+        assertThat(historyList.get(0).getLicensePlate()).isEqualTo("B 4040 EXP");
+        assertThat(historyList.get(0).getTotalFee()).isEqualTo(10000L);
+
+        // 4. CSV synchronization failure is logged
+        assertThat(output.getAll()).contains("Failed to synchronize parking history CSV after transaction commit");
+
+        // 5. No second checkout invoice is generated on retry (returns 404 Not Found)
+        mockMvc.perform(post("/api/v1/parking/check-out")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"licensePlate\": \"B 4040 EXP\"}"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.status").value(404))
+                .andExpect(jsonPath("$.message").value("Vehicle with license plate B 4040 EXP is not actively parked"));
+        assertThat(historyRepository.count()).isEqualTo(1);
+
+        // 6. A later successful synchronization reconstructs the correct CSV from H2
+        Files.delete(csvPath);
+        assertThat(Files.exists(csvPath)).isFalse();
+
+        historyWriter.syncFromDatabase();
+
+        assertThat(Files.exists(csvPath)).isTrue();
+        List<String> lines = Files.readAllLines(csvPath);
+        assertThat(lines).hasSize(2);
+        assertThat(lines.get(0)).isEqualTo("license_plate,vehicle_type,entry_time,exit_time,parking_fee");
+        assertThat(lines.get(1)).contains("B 4040 EXP,1,");
+        assertThat(lines.get(1)).endsWith(",10000");
+
+        // Subsequent checkout operation also maintains correct synchronization
+        sessionRepository.save(new ParkingSession("D 5050 NXT", VehicleType.MOTORCYCLE, LocalDateTime.now().minusHours(1)));
+        mockMvc.perform(post("/api/v1/parking/check-out")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"licensePlate\": \"D 5050 NXT\"}"))
+                .andExpect(status().isOk());
+
+        lines = Files.readAllLines(csvPath);
+        assertThat(lines).hasSize(3);
+        assertThat(lines.get(1)).contains("B 4040 EXP");
+        assertThat(lines.get(2)).contains("D 5050 NXT");
     }
 
     @Test

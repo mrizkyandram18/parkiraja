@@ -17,6 +17,8 @@ import com.parkiraja.repository.ParkingCapacityRepository;
 import com.parkiraja.repository.ParkingHistoryRepository;
 import com.parkiraja.repository.ParkingReservationRepository;
 import com.parkiraja.repository.ParkingSessionRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -29,6 +31,8 @@ import java.util.Optional;
 
 @Service
 public class VehicleService {
+
+    private static final Logger log = LoggerFactory.getLogger(VehicleService.class);
 
     private final ParkingCapacityRepository parkingCapacityRepository;
     private final ParkingSessionRepository parkingSessionRepository;
@@ -130,11 +134,19 @@ public class VehicleService {
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                 @Override
                 public void afterCommit() {
-                    parkingHistoryWriter.syncFromDatabase();
+                    try {
+                        parkingHistoryWriter.syncFromDatabase();
+                    } catch (Exception e) {
+                        log.error("Failed to synchronize parking history CSV after transaction commit", e);
+                    }
                 }
             });
         } else {
-            parkingHistoryWriter.syncFromDatabase();
+            try {
+                parkingHistoryWriter.syncFromDatabase();
+            } catch (Exception e) {
+                log.error("Failed to synchronize parking history CSV", e);
+            }
         }
 
         return new CheckOutResponse(

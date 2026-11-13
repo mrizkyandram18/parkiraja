@@ -11,6 +11,7 @@ import com.parkiraja.entity.ParkingSession;
 import com.parkiraja.entity.VehicleType;
 import com.parkiraja.exception.CapacityNotFoundException;
 import com.parkiraja.exception.DuplicateVehicleException;
+import com.parkiraja.exception.ParkingHistoryException;
 import com.parkiraja.exception.ParkingLotFullException;
 import com.parkiraja.exception.VehicleNotFoundException;
 import com.parkiraja.repository.ParkingCapacityRepository;
@@ -32,6 +33,7 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -265,6 +267,49 @@ class VehicleServiceTest {
         } finally {
             TransactionSynchronizationManager.clear();
         }
+    }
+
+    @Test
+    void shouldCatchAndLogExceptionWhenCsvSyncFailsInAfterCommit() {
+        LocalDateTime entryTime = LocalDateTime.now().minusHours(1);
+        ParkingSession session = new ParkingSession("B 5555 ERR", VehicleType.CAR, entryTime);
+        ParkingCapacity capacity = new ParkingCapacity(ParkingCapacity.SINGLETON_ID, 10, LocalDateTime.now());
+
+        when(parkingCapacityRepository.findByIdForUpdate(ParkingCapacity.SINGLETON_ID)).thenReturn(Optional.of(capacity));
+        when(parkingSessionRepository.findByLicensePlate("B 5555 ERR")).thenReturn(Optional.of(session));
+        doThrow(new ParkingHistoryException("Failed to record parking history to CSV", new RuntimeException("disk full")))
+                .when(parkingHistoryWriter).syncFromDatabase();
+
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            CheckOutResponse response = vehicleService.checkOut(new CheckOutRequest("B 5555 ERR"));
+            assertThat(response.licensePlate()).isEqualTo("B 5555 ERR");
+
+            // Execute registered afterCommit synchronization - must not throw exception
+            for (TransactionSynchronization sync : TransactionSynchronizationManager.getSynchronizations()) {
+                sync.afterCommit();
+            }
+            verify(parkingHistoryWriter).syncFromDatabase();
+        } finally {
+            TransactionSynchronizationManager.clear();
+        }
+    }
+
+    @Test
+    void shouldCatchAndLogExceptionWhenCsvSyncFailsWithoutActiveTransaction() {
+        LocalDateTime entryTime = LocalDateTime.now().minusHours(1);
+        ParkingSession session = new ParkingSession("B 6666 ERR", VehicleType.CAR, entryTime);
+        ParkingCapacity capacity = new ParkingCapacity(ParkingCapacity.SINGLETON_ID, 10, LocalDateTime.now());
+
+        when(parkingCapacityRepository.findByIdForUpdate(ParkingCapacity.SINGLETON_ID)).thenReturn(Optional.of(capacity));
+        when(parkingSessionRepository.findByLicensePlate("B 6666 ERR")).thenReturn(Optional.of(session));
+        doThrow(new ParkingHistoryException("Failed to record parking history to CSV", new RuntimeException("disk full")))
+                .when(parkingHistoryWriter).syncFromDatabase();
+
+        CheckOutResponse response = vehicleService.checkOut(new CheckOutRequest("B 6666 ERR"));
+        assertThat(response.licensePlate()).isEqualTo("B 6666 ERR");
+        verify(parkingHistoryWriter).syncFromDatabase();
     }
 
     @Test

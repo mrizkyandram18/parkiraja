@@ -4,7 +4,9 @@ import com.parkiraja.dto.CapacityRequest;
 import com.parkiraja.dto.CapacityResponse;
 import com.parkiraja.entity.ParkingCapacity;
 import com.parkiraja.exception.CapacityNotFoundException;
+import com.parkiraja.exception.InvalidCapacityException;
 import com.parkiraja.repository.ParkingCapacityRepository;
+import com.parkiraja.repository.ParkingSessionRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -14,13 +16,22 @@ import java.time.LocalDateTime;
 public class ParkingCapacityService {
 
     private final ParkingCapacityRepository repository;
+    private final ParkingSessionRepository parkingSessionRepository;
 
-    public ParkingCapacityService(ParkingCapacityRepository repository) {
+    public ParkingCapacityService(ParkingCapacityRepository repository, ParkingSessionRepository parkingSessionRepository) {
         this.repository = repository;
+        this.parkingSessionRepository = parkingSessionRepository;
     }
 
     @Transactional
     public CapacityResponse updateCapacity(CapacityRequest request) {
+        long activeVehicleCount = parkingSessionRepository.count();
+        if (request.totalCapacity() < activeVehicleCount) {
+            throw new InvalidCapacityException(
+                    "Total capacity cannot be less than current active vehicle count: " + activeVehicleCount
+            );
+        }
+
         ParkingCapacity capacity = repository.findById(ParkingCapacity.SINGLETON_ID)
                 .map(existing -> {
                     existing.setTotalCapacity(request.totalCapacity());
@@ -42,5 +53,10 @@ public class ParkingCapacityService {
         return repository.findById(ParkingCapacity.SINGLETON_ID)
                 .map(capacity -> new CapacityResponse(capacity.getTotalCapacity()))
                 .orElseThrow(() -> new CapacityNotFoundException("Parking capacity has not been configured"));
+    }
+
+    @Transactional(readOnly = true)
+    public long getActiveVehicleCount() {
+        return parkingSessionRepository.count();
     }
 }

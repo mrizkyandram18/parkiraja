@@ -4,7 +4,9 @@ import com.parkiraja.dto.CapacityRequest;
 import com.parkiraja.dto.CapacityResponse;
 import com.parkiraja.entity.ParkingCapacity;
 import com.parkiraja.exception.CapacityNotFoundException;
+import com.parkiraja.exception.InvalidCapacityException;
 import com.parkiraja.repository.ParkingCapacityRepository;
+import com.parkiraja.repository.ParkingSessionRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -27,12 +29,16 @@ class ParkingCapacityServiceTest {
     @Mock
     private ParkingCapacityRepository repository;
 
+    @Mock
+    private ParkingSessionRepository parkingSessionRepository;
+
     @InjectMocks
     private ParkingCapacityService service;
 
     @Test
     void shouldCreateCapacityWhenNotExists() {
         CapacityRequest request = new CapacityRequest(50);
+        when(parkingSessionRepository.count()).thenReturn(0L);
         when(repository.findById(ParkingCapacity.SINGLETON_ID)).thenReturn(Optional.empty());
         when(repository.save(any(ParkingCapacity.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -51,6 +57,7 @@ class ParkingCapacityServiceTest {
     void shouldUpdateCapacityWhenAlreadyExists() {
         ParkingCapacity existing = new ParkingCapacity(ParkingCapacity.SINGLETON_ID, 20, LocalDateTime.now().minusDays(1));
         CapacityRequest request = new CapacityRequest(50);
+        when(parkingSessionRepository.count()).thenReturn(10L);
         when(repository.findById(ParkingCapacity.SINGLETON_ID)).thenReturn(Optional.of(existing));
         when(repository.save(existing)).thenReturn(existing);
 
@@ -59,6 +66,19 @@ class ParkingCapacityServiceTest {
         assertThat(response.totalCapacity()).isEqualTo(50);
         assertThat(existing.getTotalCapacity()).isEqualTo(50);
         verify(repository).save(existing);
+    }
+
+    @Test
+    void shouldThrowInvalidCapacityExceptionWhenNewCapacityLessThanActiveVehicles() {
+        CapacityRequest request = new CapacityRequest(5);
+        when(parkingSessionRepository.count()).thenReturn(10L);
+
+        InvalidCapacityException exception = assertThrows(
+                InvalidCapacityException.class,
+                () -> service.updateCapacity(request)
+        );
+
+        assertThat(exception.getMessage()).contains("Total capacity cannot be less than current active vehicle count: 10");
     }
 
     @Test
@@ -83,5 +103,15 @@ class ParkingCapacityServiceTest {
 
         assertThat(exception.getMessage()).isEqualTo("Parking capacity has not been configured");
         verify(repository).findById(ParkingCapacity.SINGLETON_ID);
+    }
+
+    @Test
+    void shouldReturnActiveVehicleCount() {
+        when(parkingSessionRepository.count()).thenReturn(7L);
+
+        long count = service.getActiveVehicleCount();
+
+        assertThat(count).isEqualTo(7L);
+        verify(parkingSessionRepository).count();
     }
 }

@@ -33,6 +33,7 @@ import java.util.Optional;
 public class VehicleService {
 
     private static final Logger log = LoggerFactory.getLogger(VehicleService.class);
+    private static final long SECONDS_PER_HOUR = 3600L;
 
     private final ParkingCapacityRepository parkingCapacityRepository;
     private final ParkingSessionRepository parkingSessionRepository;
@@ -168,6 +169,6 @@ public class VehicleService {
         if (totalSeconds <= 0) {
             return 1L;
         }
-        return (totalSeconds + 3599) / 3600;
+        return (totalSeconds + SECONDS_PER_HOUR - 1) / SECONDS_PER_HOUR;
     }
 }

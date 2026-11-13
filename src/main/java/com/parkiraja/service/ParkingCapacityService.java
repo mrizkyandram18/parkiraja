@@ -6,6 +6,7 @@ import com.parkiraja.entity.ParkingCapacity;
 import com.parkiraja.exception.CapacityNotFoundException;
 import com.parkiraja.exception.InvalidCapacityException;
 import com.parkiraja.repository.ParkingCapacityRepository;
+import com.parkiraja.repository.ParkingReservationRepository;
 import com.parkiraja.repository.ParkingSessionRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -17,10 +18,14 @@ public class ParkingCapacityService {
 
     private final ParkingCapacityRepository repository;
     private final ParkingSessionRepository parkingSessionRepository;
+    private final ParkingReservationRepository parkingReservationRepository;
 
-    public ParkingCapacityService(ParkingCapacityRepository repository, ParkingSessionRepository parkingSessionRepository) {
+    public ParkingCapacityService(ParkingCapacityRepository repository,
+                                  ParkingSessionRepository parkingSessionRepository,
+                                  ParkingReservationRepository parkingReservationRepository) {
         this.repository = repository;
         this.parkingSessionRepository = parkingSessionRepository;
+        this.parkingReservationRepository = parkingReservationRepository;
     }
 
     @Transactional
@@ -33,10 +38,13 @@ public class ParkingCapacityService {
                 ));
 
         long activeVehicleCount = parkingSessionRepository.count();
-        if (request.totalCapacity() < activeVehicleCount) {
-            throw new InvalidCapacityException(
-                    "Total capacity cannot be less than current active vehicle count: " + activeVehicleCount
-            );
+        long activeReservationCount = parkingReservationRepository.count();
+        long totalOccupied = activeVehicleCount + activeReservationCount;
+        if (request.totalCapacity() < totalOccupied) {
+            String message = activeReservationCount > 0
+                    ? "Total capacity cannot be less than current active vehicle and reservation count: " + totalOccupied
+                    : "Total capacity cannot be less than current active vehicle count: " + activeVehicleCount;
+            throw new InvalidCapacityException(message);
         }
 
         capacity.setTotalCapacity(request.totalCapacity());

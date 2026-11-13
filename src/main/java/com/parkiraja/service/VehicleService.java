@@ -3,6 +3,7 @@ package com.parkiraja.service;
 import com.parkiraja.dto.CheckInRequest;
 import com.parkiraja.dto.VehicleResponse;
 import com.parkiraja.entity.ParkingCapacity;
+import com.parkiraja.entity.ParkingReservation;
 import com.parkiraja.entity.ParkingSession;
 import com.parkiraja.entity.VehicleType;
 import com.parkiraja.exception.CapacityNotFoundException;
@@ -10,23 +11,28 @@ import com.parkiraja.exception.DuplicateVehicleException;
 import com.parkiraja.exception.ParkingLotFullException;
 import com.parkiraja.exception.VehicleNotFoundException;
 import com.parkiraja.repository.ParkingCapacityRepository;
+import com.parkiraja.repository.ParkingReservationRepository;
 import com.parkiraja.repository.ParkingSessionRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.Locale;
+import java.util.Optional;
 
 @Service
 public class VehicleService {
 
     private final ParkingCapacityRepository parkingCapacityRepository;
     private final ParkingSessionRepository parkingSessionRepository;
+    private final ParkingReservationRepository parkingReservationRepository;
 
     public VehicleService(ParkingCapacityRepository parkingCapacityRepository,
-                          ParkingSessionRepository parkingSessionRepository) {
+                          ParkingSessionRepository parkingSessionRepository,
+                          ParkingReservationRepository parkingReservationRepository) {
         this.parkingCapacityRepository = parkingCapacityRepository;
         this.parkingSessionRepository = parkingSessionRepository;
+        this.parkingReservationRepository = parkingReservationRepository;
     }
 
     @Transactional
@@ -37,14 +43,21 @@ public class VehicleService {
         ParkingCapacity capacity = parkingCapacityRepository.findByIdForUpdate(ParkingCapacity.SINGLETON_ID)
                 .orElseThrow(() -> new CapacityNotFoundException("Parking capacity has not been configured"));
 
-        long activeCount = parkingSessionRepository.count();
-        if (activeCount >= capacity.getTotalCapacity()) {
-            throw new ParkingLotFullException("Parking lot is full");
-        }
-
         if (parkingSessionRepository.existsByLicensePlate(normalizedPlate)) {
             throw new DuplicateVehicleException("Vehicle with license plate " + normalizedPlate + " is already actively parked");
         }
+
+        Optional<ParkingReservation> matchingReservation = parkingReservationRepository.findByLicensePlate(normalizedPlate);
+
+        if (matchingReservation.isEmpty()) {
+            long activeCount = parkingSessionRepository.count();
+            long reservedCount = parkingReservationRepository.count();
+            if (activeCount + reservedCount >= capacity.getTotalCapacity()) {
+                throw new ParkingLotFullException("Parking lot is full");
+            }
+        }
+
+        matchingReservation.ifPresent(parkingReservationRepository::delete);
 
         ParkingSession session = new ParkingSession(normalizedPlate, vehicleType, LocalDateTime.now());
         ParkingSession saved = parkingSessionRepository.save(session);

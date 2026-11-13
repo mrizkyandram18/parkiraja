@@ -4,6 +4,7 @@ import com.parkiraja.entity.ParkingCapacity;
 import com.parkiraja.entity.ParkingSession;
 import com.parkiraja.entity.VehicleType;
 import com.parkiraja.repository.ParkingCapacityRepository;
+import com.parkiraja.repository.ParkingReservationRepository;
 import com.parkiraja.repository.ParkingSessionRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -44,11 +45,15 @@ class VehicleIntegrationTest {
     @Autowired
     private ParkingSessionRepository sessionRepository;
 
+    @Autowired
+    private ParkingReservationRepository reservationRepository;
+
     private MockMvc mockMvc;
 
     @BeforeEach
     void setUp() {
         mockMvc = MockMvcBuilders.webAppContextSetup(webApplicationContext).build();
+        reservationRepository.deleteAll();
         sessionRepository.deleteAll();
         capacityRepository.deleteAll();
     }

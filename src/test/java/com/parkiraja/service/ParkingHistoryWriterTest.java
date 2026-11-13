@@ -158,4 +158,32 @@ class ParkingHistoryWriterTest {
     void shouldReturnCsvFilePath() {
         assertThat(writer.getCsvFilePath()).isEqualTo(testCsvFile);
     }
+
+    @Test
+    void shouldCatchAndLogParkingHistoryExceptionOnApplicationReady() {
+        Path directoryAsFile = tempDir.resolve("dir_as_file_ready");
+        try {
+            Files.createDirectories(directoryAsFile);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+
+        when(parkingHistoryRepository.findAllByOrderByIdAsc()).thenReturn(List.of(
+                new ParkingHistory("B 1111 ERR", VehicleType.CAR, LocalDateTime.now(), LocalDateTime.now(), 5000L)
+        ));
+
+        ParkingHistoryWriter faultyWriter = new ParkingHistoryWriter(directoryAsFile.toString(), parkingHistoryRepository);
+        // Must catch ParkingHistoryException and not throw
+        faultyWriter.onApplicationReady();
+        verify(parkingHistoryRepository).findAllByOrderByIdAsc();
+    }
+
+    @Test
+    void shouldPropagateDatabaseExceptionOnApplicationReady() {
+        when(parkingHistoryRepository.findAllByOrderByIdAsc())
+                .thenThrow(new RuntimeException("Database connection failure"));
+
+        assertThrows(RuntimeException.class, () -> writer.onApplicationReady());
+        verify(parkingHistoryRepository).findAllByOrderByIdAsc();
+    }
 }

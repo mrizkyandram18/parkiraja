@@ -71,4 +71,10 @@ Because the initial assignment specification does not specify fractional-hour ra
    - 60 minutes $\rightarrow$ 1 billed hour
    - 61 minutes $\rightarrow$ 2 billed hours
    - 2 hours 15 minutes $\rightarrow$ 3 billed hours
-4. **Transaction History**: Every completed checkout is persisted to `data/parking_history.csv` before the parking session is cleared.
+
+## Parking History & CSV Synchronization
+
+1. **Atomic Database Persistence**: Every completed checkout atomically persists a `ParkingHistory` record to the H2 database and removes the active `ParkingSession` within a single `@Transactional` boundary. The durable H2 database serves as the authoritative source of truth.
+2. **Post-Commit CSV Synchronization**: The `data/parking_history.csv` export is generated from committed H2 history via Spring's `TransactionSynchronization.afterCommit()` callback after the database transaction successfully commits. History retrieval uses an independent read transaction (`Propagation.REQUIRES_NEW`).
+3. **Safe Error Isolation**: If CSV synchronization fails (e.g. disk I/O or permissions), the failure is logged via SLF4J without causing the checkout operation to fail (`HTTP 200 OK`). The committed database history remains safe, and subsequent checkouts return `HTTP 404 Not Found` rather than generating duplicate invoices.
+4. **Startup & Ongoing Reconstruction**: On application startup (`ApplicationReadyEvent`), `ParkingHistoryWriter` rebuilds the CSV file from the durable H2 history. Startup export errors are caught and logged so the service stays running. Any later successful synchronization (startup or subsequent checkout) automatically rebuilds the complete CSV file without duplicating records.

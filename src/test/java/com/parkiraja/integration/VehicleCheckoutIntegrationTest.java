@@ -548,6 +548,53 @@ class VehicleCheckoutIntegrationTest {
     }
 
     @Test
+    void shouldHandleStartupCsvExportFailureGracefullyAndRecoverOnSubsequentSync(CapturedOutput output) throws IOException {
+        // Requirements 3.1 - 3.6: Startup CSV failure handling, durability, and recovery
+        ParkingHistory history = new ParkingHistory("B 8888 STARTFAIL", VehicleType.CAR, LocalDateTime.now().minusHours(2), LocalDateTime.now(), 10000L);
+        historyRepository.save(history);
+
+        // 1. Simulate CSV write failure during startup by creating a directory at csvPath
+        if (Files.exists(csvPath)) {
+            if (Files.isDirectory(csvPath)) {
+                Files.delete(csvPath);
+            } else {
+                Files.deleteIfExists(csvPath);
+            }
+        }
+        Files.createDirectories(csvPath);
+
+        // 2 & 3. Startup listener does not propagate a CSV export failure
+        historyWriter.onApplicationReady();
+
+        // 2. CSV write failure during startup is logged with SLF4J
+        assertThat(output.getAll()).contains("Failed to synchronize parking history CSV during application startup");
+
+        // 4. Database history remains completely intact after failed startup export
+        List<ParkingHistory> dbHistories = historyRepository.findAll();
+        assertThat(dbHistories).hasSize(1);
+        assertThat(dbHistories.get(0).getLicensePlate()).isEqualTo("B 8888 STARTFAIL");
+        assertThat(dbHistories.get(0).getTotalFee()).isEqualTo(10000L);
+
+        // 5. A subsequent successful synchronization rebuilds the CSV correctly
+        Files.delete(csvPath);
+        assertThat(Files.exists(csvPath)).isFalse();
+
+        historyWriter.syncFromDatabase();
+
+        assertThat(Files.exists(csvPath)).isTrue();
+        List<String> lines = Files.readAllLines(csvPath);
+        assertThat(lines).hasSize(2);
+        assertThat(lines.get(0)).isEqualTo("license_plate,vehicle_type,entry_time,exit_time,parking_fee");
+        assertThat(lines.get(1)).contains("B 8888 STARTFAIL,1,");
+        assertThat(lines.get(1)).endsWith(",10000");
+
+        // 6. Repeated synchronization does not duplicate records
+        historyWriter.onApplicationReady();
+        lines = Files.readAllLines(csvPath);
+        assertThat(lines).hasSize(2);
+    }
+
+    @Test
     void shouldNotDuplicateTransactionsOnRepeatedSynchronization() {
         // Requirement 5.6: Repeated synchronization does not duplicate transactions
         ParkingHistory h1 = new ParkingHistory("B 6666 REP", VehicleType.CAR, LocalDateTime.now().minusHours(1), LocalDateTime.now(), 5000L);

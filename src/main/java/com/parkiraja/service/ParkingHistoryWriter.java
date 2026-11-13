@@ -3,6 +3,8 @@ package com.parkiraja.service;
 import com.parkiraja.entity.ParkingHistory;
 import com.parkiraja.exception.ParkingHistoryException;
 import com.parkiraja.repository.ParkingHistoryRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
@@ -19,6 +21,7 @@ import java.util.List;
 @Component
 public class ParkingHistoryWriter {
 
+    private static final Logger log = LoggerFactory.getLogger(ParkingHistoryWriter.class);
     private static final String CSV_HEADER = "license_plate,vehicle_type,entry_time,exit_time,parking_fee\r\n";
 
     private final Path csvFilePath;
@@ -32,7 +35,11 @@ public class ParkingHistoryWriter {
 
     @EventListener(ApplicationReadyEvent.class)
     public void onApplicationReady() {
-        syncFromDatabase();
+        try {
+            syncFromDatabase();
+        } catch (ParkingHistoryException e) {
+            log.error("Failed to synchronize parking history CSV during application startup", e);
+        }
     }
 
     public synchronized void syncFromDatabase() {

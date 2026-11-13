@@ -667,4 +667,39 @@ class VehicleCheckoutIntegrationTest {
         assertThat(sessionRepository.count()).isEqualTo(1);
         assertThat(historyRepository.count()).isEqualTo(0);
     }
+
+    @Test
+    void shouldPreventCsvInjectionWhilePreservingOriginalLicensePlateInH2Database() throws Exception {
+        // Setup parking capacity and session with formula-like license plate
+        capacityRepository.save(new ParkingCapacity(ParkingCapacity.SINGLETON_ID, 5, LocalDateTime.now()));
+        String formulaPlate = "=CMD|' /C CALC'!A0";
+        sessionRepository.save(new ParkingSession(formulaPlate, VehicleType.CAR, LocalDateTime.now().minusHours(2)));
+
+        // Perform checkout
+        mockMvc.perform(post("/api/v1/parking/check-out")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"licensePlate\": \"" + formulaPlate + "\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.licensePlate").value(formulaPlate))
+                .andExpect(jsonPath("$.durationHours").value(2))
+                .andExpect(jsonPath("$.totalFee").value(10000));
+
+        // 1. Verify H2 database remains the durable source of truth with original unmodified plate
+        List<ParkingHistory> histories = historyRepository.findAll();
+        assertThat(histories).hasSize(1);
+        assertThat(histories.get(0).getLicensePlate()).isEqualTo(formulaPlate);
+
+        // 2. Verify CSV export is sanitized at the export boundary with single quote prefix
+        List<String> lines = Files.readAllLines(csvPath);
+        assertThat(lines).hasSize(2);
+        assertThat(lines.get(0)).isEqualTo("license_plate,vehicle_type,entry_time,exit_time,parking_fee");
+        assertThat(lines.get(1)).startsWith("'" + formulaPlate + ",1,");
+
+        // 3. Verify startup CSV regeneration from H2 preserves formula defense and H2 truth
+        historyWriter.syncFromDatabase();
+        List<String> resyncedLines = Files.readAllLines(csvPath);
+        assertThat(resyncedLines).hasSize(2);
+        assertThat(resyncedLines.get(1)).startsWith("'" + formulaPlate + ",1,");
+        assertThat(historyRepository.findAll().get(0).getLicensePlate()).isEqualTo(formulaPlate);
+    }
 }

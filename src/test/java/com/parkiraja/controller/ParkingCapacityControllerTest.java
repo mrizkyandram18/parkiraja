@@ -126,12 +126,25 @@ class ParkingCapacityControllerTest {
 
     @Test
     void shouldReturn500WhenGenericExceptionOccurs() throws Exception {
-        when(capacityService.getCapacity()).thenThrow(new RuntimeException("Unexpected server error"));
+        when(capacityService.getCapacity()).thenThrow(new RuntimeException("Unexpected server error: SELECT * FROM users"));
 
         mockMvc.perform(get("/api/v1/parking/capacity"))
                 .andExpect(status().isInternalServerError())
                 .andExpect(jsonPath("$.status").value(500))
                 .andExpect(jsonPath("$.error").value("Internal Server Error"))
-                .andExpect(jsonPath("$.message").value("Unexpected server error"));
+                .andExpect(jsonPath("$.message").value("An unexpected internal error occurred"));
+    }
+
+    @Test
+    void shouldNotExposeSensitiveSqlOrFilesystemDetailsOnGenericException() throws Exception {
+        when(capacityService.getCapacity())
+                .thenThrow(new RuntimeException("Syntax error in SQL statement SELECT * FROM SECRET_TABLE at /var/data/h2/db.mv.db"));
+
+        mockMvc.perform(get("/api/v1/parking/capacity"))
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.status").value(500))
+                .andExpect(jsonPath("$.error").value("Internal Server Error"))
+                .andExpect(jsonPath("$.message").value("An unexpected internal error occurred"))
+                .andExpect(jsonPath("$.timestamp").isNotEmpty());
     }
 }

@@ -99,9 +99,37 @@ public class ParkingHistoryWriter {
         if (value == null) {
             return "";
         }
-        if (value.contains(",") || value.contains("\"") || value.contains("\n") || value.contains("\r")) {
-            return "\"" + value.replace("\"", "\"\"") + "\"";
+        String sanitized = sanitizeFormula(value);
+        if (sanitized.contains(",") || sanitized.contains("\"") || sanitized.contains("\n") || sanitized.contains("\r")) {
+            return "\"" + sanitized.replace("\"", "\"\"") + "\"";
+        }
+        return sanitized;
+    }
+
+    public String sanitizeFormula(String value) {
+        if (value == null || value.isEmpty()) {
+            return value;
+        }
+        char first = value.charAt(0);
+        if (isFormulaTrigger(first) || first == '\t' || first == '\r') {
+            return "'" + value;
+        }
+        int i = 0;
+        int len = value.length();
+        while (i < len && isWhitespaceOrControl(value.charAt(i))) {
+            i++;
+        }
+        if (i > 0 && i < len && isFormulaTrigger(value.charAt(i))) {
+            return "'" + value;
         }
         return value;
+    }
+
+    private boolean isFormulaTrigger(char ch) {
+        return ch == '=' || ch == '+' || ch == '-' || ch == '@';
+    }
+
+    private boolean isWhitespaceOrControl(char ch) {
+        return ch <= ' ' || Character.isWhitespace(ch) || Character.isISOControl(ch);
     }
 }

@@ -1,10 +1,16 @@
 package com.parkiraja.service;
 
+import com.parkiraja.entity.ParkingHistory;
+import com.parkiraja.entity.VehicleType;
 import com.parkiraja.exception.ParkingHistoryException;
+import com.parkiraja.repository.ParkingHistoryRepository;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -14,11 +20,17 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
+@ExtendWith(MockitoExtension.class)
 class ParkingHistoryWriterTest {
 
     @TempDir
     Path tempDir;
+
+    @Mock
+    private ParkingHistoryRepository parkingHistoryRepository;
 
     private Path testCsvFile;
     private ParkingHistoryWriter writer;
@@ -26,7 +38,7 @@ class ParkingHistoryWriterTest {
     @BeforeEach
     void setUp() {
         testCsvFile = tempDir.resolve("history/test_parking_history.csv");
-        writer = new ParkingHistoryWriter(testCsvFile.toString());
+        writer = new ParkingHistoryWriter(testCsvFile.toString(), parkingHistoryRepository);
     }
 
     @AfterEach
@@ -41,9 +53,12 @@ class ParkingHistoryWriterTest {
         LocalDateTime entryTime = LocalDateTime.of(2026, 11, 13, 10, 0, 0);
         LocalDateTime exitTime = LocalDateTime.of(2026, 11, 13, 12, 0, 0);
 
-        writer.append("B 1234 XYZ", 1, entryTime, exitTime, 10000L);
+        ParkingHistory history = new ParkingHistory("B 1234 XYZ", VehicleType.CAR, entryTime, exitTime, 10000L);
+        writer.writeAll(List.of(history));
 
         assertThat(Files.exists(testCsvFile)).isTrue();
+        String fileContent = Files.readString(testCsvFile);
+        assertThat(fileContent).contains("\r\n"); // RFC 4180 CRLF
         List<String> lines = Files.readAllLines(testCsvFile);
         assertThat(lines).hasSize(2);
         assertThat(lines.get(0)).isEqualTo("license_plate,vehicle_type,entry_time,exit_time,parking_fee");
@@ -51,14 +66,16 @@ class ParkingHistoryWriterTest {
     }
 
     @Test
-    void shouldAppendMultipleTransactionsWithoutDuplicatingHeader() throws IOException {
+    void shouldWriteMultipleTransactionsWithoutDuplicatingHeader() throws IOException {
         LocalDateTime entryTime1 = LocalDateTime.of(2026, 11, 13, 10, 0, 0);
         LocalDateTime exitTime1 = LocalDateTime.of(2026, 11, 13, 11, 0, 0);
         LocalDateTime entryTime2 = LocalDateTime.of(2026, 11, 13, 11, 30, 0);
         LocalDateTime exitTime2 = LocalDateTime.of(2026, 11, 13, 13, 0, 0);
 
-        writer.append("B 1111 AA", 1, entryTime1, exitTime1, 5000L);
-        writer.append("D 2222 BB", 2, entryTime2, exitTime2, 6000L);
+        ParkingHistory history1 = new ParkingHistory("B 1111 AA", VehicleType.CAR, entryTime1, exitTime1, 5000L);
+        ParkingHistory history2 = new ParkingHistory("D 2222 BB", VehicleType.MOTORCYCLE, entryTime2, exitTime2, 6000L);
+
+        writer.writeAll(List.of(history1, history2));
 
         List<String> lines = Files.readAllLines(testCsvFile);
         assertThat(lines).hasSize(3);
@@ -68,48 +85,77 @@ class ParkingHistoryWriterTest {
     }
 
     @Test
+    void shouldHandleNullOrEmptyHistoryList() throws IOException {
+        writer.writeAll(null);
+        assertThat(Files.exists(testCsvFile)).isTrue();
+        List<String> lines = Files.readAllLines(testCsvFile);
+        assertThat(lines).hasSize(1);
+        assertThat(lines.get(0)).isEqualTo("license_plate,vehicle_type,entry_time,exit_time,parking_fee");
+
+        writer.writeAll(List.of());
+        lines = Files.readAllLines(testCsvFile);
+        assertThat(lines).hasSize(1);
+    }
+
+    @Test
+    void shouldSyncFromDatabaseAndSupportOnApplicationReady() throws IOException {
+        LocalDateTime entry = LocalDateTime.of(2026, 11, 13, 9, 0, 0);
+        LocalDateTime exit = LocalDateTime.of(2026, 11, 13, 10, 0, 0);
+        ParkingHistory history = new ParkingHistory("B 9999 SYNC", VehicleType.CAR, entry, exit, 5000L);
+
+        when(parkingHistoryRepository.findAllByOrderByIdAsc()).thenReturn(List.of(history));
+
+        // Test onApplicationReady()
+        writer.onApplicationReady();
+
+        verify(parkingHistoryRepository).findAllByOrderByIdAsc();
+        assertThat(Files.exists(testCsvFile)).isTrue();
+        List<String> lines = Files.readAllLines(testCsvFile);
+        assertThat(lines).hasSize(2);
+        assertThat(lines.get(1)).contains("B 9999 SYNC");
+
+        // Repeated sync does not duplicate rows
+        writer.syncFromDatabase();
+        lines = Files.readAllLines(testCsvFile);
+        assertThat(lines).hasSize(2);
+    }
+
+    @Test
     void shouldEscapeSpecialCharactersInLicensePlate() throws IOException {
         LocalDateTime entry = LocalDateTime.of(2026, 11, 13, 10, 0, 0);
         LocalDateTime exit = LocalDateTime.of(2026, 11, 13, 11, 0, 0);
 
-        // Plate with comma
-        writer.append("B,1234,XYZ", 1, entry, exit, 5000L);
-        // Plate with double quotes
-        writer.append("B \"999\" ABC", 2, entry, exit, 3000L);
-        // Plate with newline
-        writer.append("B 5555\nXYZ", 1, entry, exit, 5000L);
-        // Plate with carriage return
-        writer.append("B 7777\rXYZ", 1, entry, exit, 5000L);
-        // Null plate
-        writer.append(null, 1, entry, exit, 5000L);
+        ParkingHistory h1 = new ParkingHistory("B,1234,XYZ", VehicleType.CAR, entry, exit, 5000L);
+        ParkingHistory h2 = new ParkingHistory("B \"999\" ABC", VehicleType.MOTORCYCLE, entry, exit, 3000L);
+        ParkingHistory h3 = new ParkingHistory("B 5555\nXYZ", VehicleType.CAR, entry, exit, 5000L);
+        ParkingHistory h4 = new ParkingHistory("B 7777\rXYZ", VehicleType.CAR, entry, exit, 5000L);
+        ParkingHistory h5 = new ParkingHistory(null, VehicleType.CAR, null, null, 5000L);
 
-        List<String> lines = Files.readAllLines(testCsvFile);
-        // Header + lines
+        writer.writeAll(List.of(h1, h2, h3, h4, h5));
+
         String content = Files.readString(testCsvFile);
         assertThat(content).contains("\"B,1234,XYZ\"");
         assertThat(content).contains("\"B \"\"999\"\" ABC\"");
         assertThat(content).contains("\"B 5555\nXYZ\"");
         assertThat(content).contains("\"B 7777\rXYZ\"");
+        assertThat(writer.escapeCsv(null)).isEqualTo("");
     }
 
     @Test
     void shouldThrowParkingHistoryExceptionOnIoError() {
-        // Point writer to a directory instead of a file, causing IOException on write
         Path directoryAsFile = tempDir.resolve("dir_as_file");
         try {
             Files.createDirectories(directoryAsFile);
-        } catch (IOException ignored) {
+        } catch (IOException e) {
+            throw new RuntimeException(e);
         }
-        ParkingHistoryWriter faultyWriter = new ParkingHistoryWriter(directoryAsFile.toString());
 
-        LocalDateTime now = LocalDateTime.now();
-        assertThrows(ParkingHistoryException.class, () ->
-                faultyWriter.append("B 1234 XYZ", 1, now, now, 5000L)
-        );
+        ParkingHistoryWriter faultyWriter = new ParkingHistoryWriter(directoryAsFile.toString(), parkingHistoryRepository);
+        assertThrows(ParkingHistoryException.class, () -> faultyWriter.writeAll(List.of()));
     }
 
     @Test
-    void shouldReturnConfiguredCsvFilePath() {
+    void shouldReturnCsvFilePath() {
         assertThat(writer.getCsvFilePath()).isEqualTo(testCsvFile);
     }
 }

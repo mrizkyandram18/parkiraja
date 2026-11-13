@@ -1,7 +1,11 @@
 package com.parkiraja.service;
 
+import com.parkiraja.entity.ParkingHistory;
 import com.parkiraja.exception.ParkingHistoryException;
+import com.parkiraja.repository.ParkingHistoryRepository;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
@@ -10,50 +14,60 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.time.LocalDateTime;
+import java.util.List;
 
 @Component
 public class ParkingHistoryWriter {
 
-    private static final String CSV_HEADER = "license_plate,vehicle_type,entry_time,exit_time,parking_fee\n";
+    private static final String CSV_HEADER = "license_plate,vehicle_type,entry_time,exit_time,parking_fee\r\n";
 
     private final Path csvFilePath;
+    private final ParkingHistoryRepository parkingHistoryRepository;
 
-    public ParkingHistoryWriter(@Value("${parking.history.csv.path:data/parking_history.csv}") String csvPath) {
+    public ParkingHistoryWriter(@Value("${parking.history.csv.path:data/parking_history.csv}") String csvPath,
+                                ParkingHistoryRepository parkingHistoryRepository) {
         this.csvFilePath = Path.of(csvPath);
+        this.parkingHistoryRepository = parkingHistoryRepository;
     }
 
-    public synchronized void append(String licensePlate, int vehicleType, LocalDateTime entryTime, LocalDateTime exitTime, long parkingFee) {
+    @EventListener(ApplicationReadyEvent.class)
+    public void onApplicationReady() {
+        syncFromDatabase();
+    }
+
+    public synchronized void syncFromDatabase() {
+        List<ParkingHistory> historyList = parkingHistoryRepository.findAllByOrderByIdAsc();
+        writeAll(historyList);
+    }
+
+    public synchronized void writeAll(List<ParkingHistory> historyList) {
         try {
             Path parent = csvFilePath.getParent();
             if (parent != null && !Files.exists(parent)) {
                 Files.createDirectories(parent);
             }
 
-            boolean fileExists = Files.exists(csvFilePath) && Files.size(csvFilePath) > 0;
-            if (!fileExists) {
-                Files.writeString(
-                        csvFilePath,
-                        CSV_HEADER,
-                        StandardCharsets.UTF_8,
-                        StandardOpenOption.CREATE,
-                        StandardOpenOption.WRITE
-                );
+            StringBuilder sb = new StringBuilder();
+            sb.append(CSV_HEADER);
+            if (historyList != null) {
+                for (ParkingHistory history : historyList) {
+                    sb.append(formatRecord(
+                            history.getLicensePlate(),
+                            history.getVehicleType().getCode(),
+                            history.getEntryTime(),
+                            history.getExitTime(),
+                            history.getTotalFee()
+                    ));
+                }
             }
-
-            String record = String.format("%s,%d,%s,%s,%d\n",
-                    escapeCsv(licensePlate),
-                    vehicleType,
-                    entryTime.toString(),
-                    exitTime.toString(),
-                    parkingFee
-            );
 
             Files.writeString(
                     csvFilePath,
-                    record,
+                    sb.toString(),
                     StandardCharsets.UTF_8,
                     StandardOpenOption.CREATE,
-                    StandardOpenOption.APPEND
+                    StandardOpenOption.TRUNCATE_EXISTING,
+                    StandardOpenOption.WRITE
             );
         } catch (IOException e) {
             throw new ParkingHistoryException("Failed to record parking history to CSV", e);
@@ -64,7 +78,17 @@ public class ParkingHistoryWriter {
         return csvFilePath;
     }
 
-    private String escapeCsv(String value) {
+    private String formatRecord(String licensePlate, int vehicleType, LocalDateTime entryTime, LocalDateTime exitTime, long parkingFee) {
+        return String.format("%s,%d,%s,%s,%d\r\n",
+                escapeCsv(licensePlate),
+                vehicleType,
+                entryTime != null ? entryTime.toString() : "",
+                exitTime != null ? exitTime.toString() : "",
+                parkingFee
+        );
+    }
+
+    public String escapeCsv(String value) {
         if (value == null) {
             return "";
         }

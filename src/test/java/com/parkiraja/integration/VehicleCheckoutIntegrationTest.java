@@ -1,13 +1,17 @@
 package com.parkiraja.integration;
 
+import com.parkiraja.dto.CheckOutRequest;
 import com.parkiraja.entity.ParkingCapacity;
+import com.parkiraja.entity.ParkingHistory;
 import com.parkiraja.entity.ParkingReservation;
 import com.parkiraja.entity.ParkingSession;
 import com.parkiraja.entity.VehicleType;
 import com.parkiraja.repository.ParkingCapacityRepository;
+import com.parkiraja.repository.ParkingHistoryRepository;
 import com.parkiraja.repository.ParkingReservationRepository;
 import com.parkiraja.repository.ParkingSessionRepository;
 import com.parkiraja.service.ParkingHistoryWriter;
+import com.parkiraja.service.VehicleService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -17,15 +21,15 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.context.WebApplicationContext;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
-import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.ExecutorService;
@@ -33,6 +37,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -53,7 +58,16 @@ class VehicleCheckoutIntegrationTest {
     private ParkingReservationRepository reservationRepository;
 
     @Autowired
+    private ParkingHistoryRepository historyRepository;
+
+    @Autowired
     private ParkingHistoryWriter historyWriter;
+
+    @Autowired
+    private VehicleService vehicleService;
+
+    @Autowired
+    private PlatformTransactionManager transactionManager;
 
     private MockMvc mockMvc;
     private Path csvPath;
@@ -61,6 +75,7 @@ class VehicleCheckoutIntegrationTest {
     @BeforeEach
     void setUp() throws IOException {
         mockMvc = MockMvcBuilders.webAppContextSetup(webApplicationContext).build();
+        historyRepository.deleteAll();
         reservationRepository.deleteAll();
         sessionRepository.deleteAll();
         capacityRepository.deleteAll();
@@ -101,6 +116,12 @@ class VehicleCheckoutIntegrationTest {
         assertThat(sessionRepository.existsByLicensePlate("B 1234 CAR")).isFalse();
         assertThat(sessionRepository.count()).isEqualTo(0);
 
+        // Verify database history
+        List<ParkingHistory> historyList = historyRepository.findAll();
+        assertThat(historyList).hasSize(1);
+        assertThat(historyList.get(0).getLicensePlate()).isEqualTo("B 1234 CAR");
+        assertThat(historyList.get(0).getTotalFee()).isEqualTo(15000L);
+
         // Verify CSV file
         assertThat(Files.exists(csvPath)).isTrue();
         List<String> lines = Files.readAllLines(csvPath);
@@ -129,6 +150,7 @@ class VehicleCheckoutIntegrationTest {
                 .andExpect(jsonPath("$.totalFee").value(3000));
 
         assertThat(sessionRepository.existsByLicensePlate("D 5678 MOT")).isFalse();
+        assertThat(historyRepository.count()).isEqualTo(1);
     }
 
     @Test
@@ -217,6 +239,7 @@ class VehicleCheckoutIntegrationTest {
         // Exactly one history record written to CSV
         List<String> lines = Files.readAllLines(csvPath);
         assertThat(lines).hasSize(2); // Header + 1 record
+        assertThat(historyRepository.count()).isEqualTo(1);
     }
 
     @Test
@@ -289,6 +312,7 @@ class VehicleCheckoutIntegrationTest {
         List<String> lines = Files.readAllLines(csvPath);
         assertThat(lines).hasSize(2);
         assertThat(sessionRepository.count()).isEqualTo(0);
+        assertThat(historyRepository.count()).isEqualTo(1);
     }
 
     @Test
@@ -340,5 +364,177 @@ class VehicleCheckoutIntegrationTest {
         } else {
             assertThat(activeCount).isEqualTo(0L);
         }
+    }
+
+    // --- PHASE 6.1 DATABASE & CSV CONSISTENCY TESTS ---
+
+    @Test
+    void shouldNotLeaveInconsistentCsvWhenDatabaseTransactionRollsBack() {
+        // Requirement 2 & 5.3: Prove database/CSV dual-write problem is resolved.
+        // Active parking session exists in H2
+        capacityRepository.save(new ParkingCapacity(ParkingCapacity.SINGLETON_ID, 10, LocalDateTime.now()));
+        sessionRepository.save(new ParkingSession("B 9999 RB", VehicleType.CAR, LocalDateTime.now().minusHours(1)));
+
+        TransactionTemplate template = new TransactionTemplate(transactionManager);
+        assertThrows(RuntimeException.class, () -> {
+            template.execute(status -> {
+                vehicleService.checkOut(new CheckOutRequest("B 9999 RB"));
+                // Simulate an unexpected runtime exception prior to commit
+                throw new RuntimeException("Simulated unexpected failure before transaction commit");
+            });
+        });
+
+        // H2 state: ParkingSession must STILL be active because transaction rolled back
+        assertThat(sessionRepository.existsByLicensePlate("B 9999 RB")).isTrue();
+        assertThat(historyRepository.findAll()).isEmpty();
+
+        // CSV state: CSV must NOT contain any record for "B 9999 RB"
+        if (Files.exists(csvPath)) {
+            try {
+                String content = Files.readString(csvPath);
+                assertThat(content).doesNotContain("B 9999 RB");
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+        }
+    }
+
+    @Test
+    void shouldPersistDurableDatabaseHistoryAndMatchCsvExport() throws Exception {
+        // Requirement 5.1 & 5.2: Durable database history matches CSV export
+        capacityRepository.save(new ParkingCapacity(ParkingCapacity.SINGLETON_ID, 5, LocalDateTime.now()));
+        sessionRepository.save(new ParkingSession("B 1111 MAT", VehicleType.CAR, LocalDateTime.now().minusHours(1)));
+        sessionRepository.save(new ParkingSession("D 2222 MAT", VehicleType.MOTORCYCLE, LocalDateTime.now().minusHours(2)));
+
+        mockMvc.perform(post("/api/v1/parking/check-out")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"licensePlate\": \"B 1111 MAT\"}"))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post("/api/v1/parking/check-out")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"licensePlate\": \"D 2222 MAT\"}"))
+                .andExpect(status().isOk());
+
+        List<ParkingHistory> dbHistories = historyRepository.findAllByOrderByIdAsc();
+        assertThat(dbHistories).hasSize(2);
+
+        List<String> lines = Files.readAllLines(csvPath);
+        assertThat(lines).hasSize(3); // 1 header + 2 records
+        assertThat(lines.get(0)).isEqualTo("license_plate,vehicle_type,entry_time,exit_time,parking_fee");
+        assertThat(lines.get(1)).startsWith("B 1111 MAT,1,");
+        assertThat(lines.get(2)).startsWith("D 2222 MAT,2,");
+    }
+
+    @Test
+    void shouldRecoverCsvExportFromH2History() throws IOException {
+        // Requirement 5.4: CSV export failure can be recovered from H2 history
+        ParkingHistory h1 = new ParkingHistory("B 3333 REC", VehicleType.CAR, LocalDateTime.now().minusHours(2), LocalDateTime.now(), 10000L);
+        ParkingHistory h2 = new ParkingHistory("D 4444 REC", VehicleType.MOTORCYCLE, LocalDateTime.now().minusHours(1), LocalDateTime.now(), 3000L);
+        historyRepository.saveAll(List.of(h1, h2));
+
+        // Delete the CSV to simulate lost / interrupted export
+        Files.deleteIfExists(csvPath);
+        assertThat(Files.exists(csvPath)).isFalse();
+
+        // Trigger recovery from durable H2 history
+        historyWriter.syncFromDatabase();
+
+        assertThat(Files.exists(csvPath)).isTrue();
+        List<String> lines = Files.readAllLines(csvPath);
+        assertThat(lines).hasSize(3);
+        assertThat(lines.get(1)).contains("B 3333 REC,1,");
+        assertThat(lines.get(2)).contains("D 4444 REC,2,");
+    }
+
+    @Test
+    void shouldRecreateCorrectCsvOnStartupSynchronization() throws IOException {
+        // Requirement 5.5: Startup synchronization recreates the correct CSV
+        ParkingHistory history = new ParkingHistory("B 5555 START", VehicleType.CAR, LocalDateTime.now().minusHours(1), LocalDateTime.now(), 5000L);
+        historyRepository.save(history);
+
+        Files.deleteIfExists(csvPath);
+
+        // Fire application ready event
+        historyWriter.onApplicationReady();
+
+        assertThat(Files.exists(csvPath)).isTrue();
+        List<String> lines = Files.readAllLines(csvPath);
+        assertThat(lines).hasSize(2);
+        assertThat(lines.get(1)).contains("B 5555 START,1,");
+    }
+
+    @Test
+    void shouldNotDuplicateTransactionsOnRepeatedSynchronization() {
+        // Requirement 5.6: Repeated synchronization does not duplicate transactions
+        ParkingHistory h1 = new ParkingHistory("B 6666 REP", VehicleType.CAR, LocalDateTime.now().minusHours(1), LocalDateTime.now(), 5000L);
+        ParkingHistory h2 = new ParkingHistory("D 7777 REP", VehicleType.MOTORCYCLE, LocalDateTime.now().minusHours(1), LocalDateTime.now(), 3000L);
+        historyRepository.saveAll(List.of(h1, h2));
+
+        historyWriter.syncFromDatabase();
+        historyWriter.syncFromDatabase();
+        historyWriter.syncFromDatabase();
+
+        try {
+            List<String> lines = Files.readAllLines(csvPath);
+            assertThat(lines).hasSize(3); // 1 header + 2 records, NO duplicates
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    @Test
+    void shouldPreserveCorrectOrderOfMultipleCheckoutRecords() throws Exception {
+        // Requirement 5.7: Multiple checkout records remain correctly ordered
+        capacityRepository.save(new ParkingCapacity(ParkingCapacity.SINGLETON_ID, 10, LocalDateTime.now()));
+        sessionRepository.save(new ParkingSession("B 0001 ORD", VehicleType.CAR, LocalDateTime.now().minusHours(3)));
+        sessionRepository.save(new ParkingSession("B 0002 ORD", VehicleType.CAR, LocalDateTime.now().minusHours(2)));
+        sessionRepository.save(new ParkingSession("B 0003 ORD", VehicleType.CAR, LocalDateTime.now().minusHours(1)));
+
+        mockMvc.perform(post("/api/v1/parking/check-out").contentType(MediaType.APPLICATION_JSON).content("{\"licensePlate\": \"B 0001 ORD\"}")).andExpect(status().isOk());
+        mockMvc.perform(post("/api/v1/parking/check-out").contentType(MediaType.APPLICATION_JSON).content("{\"licensePlate\": \"B 0002 ORD\"}")).andExpect(status().isOk());
+        mockMvc.perform(post("/api/v1/parking/check-out").contentType(MediaType.APPLICATION_JSON).content("{\"licensePlate\": \"B 0003 ORD\"}")).andExpect(status().isOk());
+
+        List<String> lines = Files.readAllLines(csvPath);
+        assertThat(lines).hasSize(4);
+        assertThat(lines.get(1)).contains("B 0001 ORD");
+        assertThat(lines.get(2)).contains("B 0002 ORD");
+        assertThat(lines.get(3)).contains("B 0003 ORD");
+    }
+
+    @Test
+    void shouldVerifyNoActiveSessionRemainsAfterSuccessfulCheckout() throws Exception {
+        // Requirement 5.9: No active session remains after successful checkout
+        capacityRepository.save(new ParkingCapacity(ParkingCapacity.SINGLETON_ID, 5, LocalDateTime.now()));
+        sessionRepository.save(new ParkingSession("B 8888 CLR", VehicleType.CAR, LocalDateTime.now().minusHours(1)));
+
+        assertThat(sessionRepository.existsByLicensePlate("B 8888 CLR")).isTrue();
+
+        mockMvc.perform(post("/api/v1/parking/check-out")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"licensePlate\": \"B 8888 CLR\"}"))
+                .andExpect(status().isOk());
+
+        assertThat(sessionRepository.existsByLicensePlate("B 8888 CLR")).isFalse();
+        assertThat(sessionRepository.count()).isEqualTo(0);
+        assertThat(historyRepository.count()).isEqualTo(1);
+    }
+
+    @Test
+    void shouldPreserveActiveParkingStateWhenCheckoutFails() throws Exception {
+        // Requirement 5.10: Failed checkout preserves active parking state
+        capacityRepository.save(new ParkingCapacity(ParkingCapacity.SINGLETON_ID, 5, LocalDateTime.now()));
+        sessionRepository.save(new ParkingSession("B 9999 STAY", VehicleType.CAR, LocalDateTime.now().minusHours(1)));
+
+        // Call checkout with blank plate (fails 400)
+        mockMvc.perform(post("/api/v1/parking/check-out")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"licensePlate\": \"\"}"))
+                .andExpect(status().isBadRequest());
+
+        // Vehicle session is still active
+        assertThat(sessionRepository.existsByLicensePlate("B 9999 STAY")).isTrue();
+        assertThat(sessionRepository.count()).isEqualTo(1);
+        assertThat(historyRepository.count()).isEqualTo(0);
     }
 }

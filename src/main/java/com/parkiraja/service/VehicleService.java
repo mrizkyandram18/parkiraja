@@ -5,6 +5,7 @@ import com.parkiraja.dto.CheckOutRequest;
 import com.parkiraja.dto.CheckOutResponse;
 import com.parkiraja.dto.VehicleResponse;
 import com.parkiraja.entity.ParkingCapacity;
+import com.parkiraja.entity.ParkingHistory;
 import com.parkiraja.entity.ParkingReservation;
 import com.parkiraja.entity.ParkingSession;
 import com.parkiraja.entity.VehicleType;
@@ -13,10 +14,13 @@ import com.parkiraja.exception.DuplicateVehicleException;
 import com.parkiraja.exception.ParkingLotFullException;
 import com.parkiraja.exception.VehicleNotFoundException;
 import com.parkiraja.repository.ParkingCapacityRepository;
+import com.parkiraja.repository.ParkingHistoryRepository;
 import com.parkiraja.repository.ParkingReservationRepository;
 import com.parkiraja.repository.ParkingSessionRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
@@ -29,15 +33,18 @@ public class VehicleService {
     private final ParkingCapacityRepository parkingCapacityRepository;
     private final ParkingSessionRepository parkingSessionRepository;
     private final ParkingReservationRepository parkingReservationRepository;
+    private final ParkingHistoryRepository parkingHistoryRepository;
     private final ParkingHistoryWriter parkingHistoryWriter;
 
     public VehicleService(ParkingCapacityRepository parkingCapacityRepository,
                           ParkingSessionRepository parkingSessionRepository,
                           ParkingReservationRepository parkingReservationRepository,
+                          ParkingHistoryRepository parkingHistoryRepository,
                           ParkingHistoryWriter parkingHistoryWriter) {
         this.parkingCapacityRepository = parkingCapacityRepository;
         this.parkingSessionRepository = parkingSessionRepository;
         this.parkingReservationRepository = parkingReservationRepository;
+        this.parkingHistoryRepository = parkingHistoryRepository;
         this.parkingHistoryWriter = parkingHistoryWriter;
     }
 
@@ -108,15 +115,27 @@ public class VehicleService {
         long hourlyRate = session.getVehicleType().getHourlyRate();
         long totalFee = durationHours * hourlyRate;
 
-        parkingHistoryWriter.append(
+        ParkingHistory history = new ParkingHistory(
                 session.getLicensePlate(),
-                session.getVehicleType().getCode(),
+                session.getVehicleType(),
                 session.getEntryTime(),
                 exitTime,
                 totalFee
         );
+        parkingHistoryRepository.save(history);
 
         parkingSessionRepository.delete(session);
+
+        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    parkingHistoryWriter.syncFromDatabase();
+                }
+            });
+        } else {
+            parkingHistoryWriter.syncFromDatabase();
+        }
 
         return new CheckOutResponse(
                 session.getLicensePlate(),

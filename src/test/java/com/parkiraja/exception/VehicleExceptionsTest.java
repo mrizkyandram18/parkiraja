@@ -19,5 +19,11 @@ class VehicleExceptionsTest {
 
         InvalidCapacityException ex4 = new InvalidCapacityException("Invalid capacity");
         assertThat(ex4.getMessage()).isEqualTo("Invalid capacity");
+
+        ReservationNotFoundException ex5 = new ReservationNotFoundException("Reservation not found");
+        assertThat(ex5.getMessage()).isEqualTo("Reservation not found");
+
+        DuplicateReservationException ex6 = new DuplicateReservationException("Duplicate reservation");
+        assertThat(ex6.getMessage()).isEqualTo("Duplicate reservation");
     }
 }

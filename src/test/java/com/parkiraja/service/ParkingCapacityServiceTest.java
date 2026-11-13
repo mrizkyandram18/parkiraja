@@ -6,6 +6,7 @@ import com.parkiraja.entity.ParkingCapacity;
 import com.parkiraja.exception.CapacityNotFoundException;
 import com.parkiraja.exception.InvalidCapacityException;
 import com.parkiraja.repository.ParkingCapacityRepository;
+import com.parkiraja.repository.ParkingReservationRepository;
 import com.parkiraja.repository.ParkingSessionRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -32,6 +33,9 @@ class ParkingCapacityServiceTest {
     @Mock
     private ParkingSessionRepository parkingSessionRepository;
 
+    @Mock
+    private ParkingReservationRepository parkingReservationRepository;
+
     @InjectMocks
     private ParkingCapacityService service;
 
@@ -40,6 +44,7 @@ class ParkingCapacityServiceTest {
         CapacityRequest request = new CapacityRequest(50);
         when(repository.findByIdForUpdate(ParkingCapacity.SINGLETON_ID)).thenReturn(Optional.empty());
         when(parkingSessionRepository.count()).thenReturn(0L);
+        when(parkingReservationRepository.count()).thenReturn(0L);
         when(repository.save(any(ParkingCapacity.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         CapacityResponse response = service.updateCapacity(request);
@@ -59,6 +64,7 @@ class ParkingCapacityServiceTest {
         CapacityRequest request = new CapacityRequest(50);
         when(repository.findByIdForUpdate(ParkingCapacity.SINGLETON_ID)).thenReturn(Optional.of(existing));
         when(parkingSessionRepository.count()).thenReturn(10L);
+        when(parkingReservationRepository.count()).thenReturn(0L);
         when(repository.save(existing)).thenReturn(existing);
 
         CapacityResponse response = service.updateCapacity(request);
@@ -74,6 +80,7 @@ class ParkingCapacityServiceTest {
         when(repository.findByIdForUpdate(ParkingCapacity.SINGLETON_ID))
                 .thenReturn(Optional.of(new ParkingCapacity(ParkingCapacity.SINGLETON_ID, 20, LocalDateTime.now())));
         when(parkingSessionRepository.count()).thenReturn(10L);
+        when(parkingReservationRepository.count()).thenReturn(0L);
 
         InvalidCapacityException exception = assertThrows(
                 InvalidCapacityException.class,
@@ -84,18 +91,36 @@ class ParkingCapacityServiceTest {
     }
 
     @Test
+    void shouldThrowInvalidCapacityExceptionWhenNewCapacityLessThanActiveVehiclesAndReservations() {
+        CapacityRequest request = new CapacityRequest(4);
+        when(repository.findByIdForUpdate(ParkingCapacity.SINGLETON_ID))
+                .thenReturn(Optional.of(new ParkingCapacity(ParkingCapacity.SINGLETON_ID, 20, LocalDateTime.now())));
+        when(parkingSessionRepository.count()).thenReturn(3L);
+        when(parkingReservationRepository.count()).thenReturn(2L);
+
+        InvalidCapacityException exception = assertThrows(
+                InvalidCapacityException.class,
+                () -> service.updateCapacity(request)
+        );
+
+        assertThat(exception.getMessage()).contains("Total capacity cannot be less than current active vehicle and reservation count: 5");
+    }
+
+    @Test
     void shouldAcquireLockBeforeCountingActiveVehiclesAndPersistWithinTransaction() {
         ParkingCapacity existing = new ParkingCapacity(ParkingCapacity.SINGLETON_ID, 20, LocalDateTime.now().minusDays(1));
         CapacityRequest request = new CapacityRequest(30);
         when(repository.findByIdForUpdate(ParkingCapacity.SINGLETON_ID)).thenReturn(Optional.of(existing));
         when(parkingSessionRepository.count()).thenReturn(5L);
+        when(parkingReservationRepository.count()).thenReturn(0L);
         when(repository.save(existing)).thenReturn(existing);
 
         service.updateCapacity(request);
 
-        org.mockito.InOrder inOrder = org.mockito.Mockito.inOrder(repository, parkingSessionRepository);
+        org.mockito.InOrder inOrder = org.mockito.Mockito.inOrder(repository, parkingSessionRepository, parkingReservationRepository);
         inOrder.verify(repository).findByIdForUpdate(ParkingCapacity.SINGLETON_ID);
         inOrder.verify(parkingSessionRepository).count();
+        inOrder.verify(parkingReservationRepository).count();
         inOrder.verify(repository).save(existing);
     }
 

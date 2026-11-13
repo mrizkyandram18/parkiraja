@@ -142,6 +142,111 @@ class ParkingHistoryWriterTest {
     }
 
     @Test
+    void shouldPreventCsvFormulaInjectionOnAllDangerousPrefixes() throws IOException {
+        LocalDateTime entry = LocalDateTime.of(2026, 11, 13, 10, 0, 0);
+        LocalDateTime exit = LocalDateTime.of(2026, 11, 13, 11, 0, 0);
+
+        ParkingHistory h1 = new ParkingHistory("=CMD|' /C CALC'!A0", VehicleType.CAR, entry, exit, 5000L);
+        ParkingHistory h2 = new ParkingHistory("+62812345", VehicleType.MOTORCYCLE, entry, exit, 3000L);
+        ParkingHistory h3 = new ParkingHistory("-5000", VehicleType.CAR, entry, exit, 5000L);
+        ParkingHistory h4 = new ParkingHistory("@SUM(1,2)", VehicleType.MOTORCYCLE, entry, exit, 3000L);
+
+        writer.writeAll(List.of(h1, h2, h3, h4));
+
+        String content = Files.readString(testCsvFile);
+        // Verify formula injection protection: single quote prefix prepended at CSV serialization
+        assertThat(content).contains("'=CMD|' /C CALC'!A0,1,2026-11-13T10:00,2026-11-13T11:00,5000");
+        assertThat(content).contains("'+62812345,2,2026-11-13T10:00,2026-11-13T11:00,3000");
+        assertThat(content).contains("'-5000,1,2026-11-13T10:00,2026-11-13T11:00,5000");
+        assertThat(content).contains("\"'@SUM(1,2)\",2,2026-11-13T10:00,2026-11-13T11:00,3000");
+
+        // Verify entities themselves were NOT modified in memory/database
+        assertThat(h1.getLicensePlate()).isEqualTo("=CMD|' /C CALC'!A0");
+        assertThat(h2.getLicensePlate()).isEqualTo("+62812345");
+        assertThat(h3.getLicensePlate()).isEqualTo("-5000");
+        assertThat(h4.getLicensePlate()).isEqualTo("@SUM(1,2)");
+    }
+
+    @Test
+    void shouldPreventCsvFormulaInjectionWithLeadingWhitespaceAndControlCharacters() throws IOException {
+        LocalDateTime entry = LocalDateTime.of(2026, 11, 13, 10, 0, 0);
+        LocalDateTime exit = LocalDateTime.of(2026, 11, 13, 11, 0, 0);
+
+        ParkingHistory h1 = new ParkingHistory("   =1+1", VehicleType.CAR, entry, exit, 5000L);
+        ParkingHistory h2 = new ParkingHistory("\t+1+1", VehicleType.CAR, entry, exit, 5000L);
+        ParkingHistory h3 = new ParkingHistory("\r=1+1", VehicleType.CAR, entry, exit, 5000L);
+        ParkingHistory h4 = new ParkingHistory("\n=1+1", VehicleType.CAR, entry, exit, 5000L);
+        ParkingHistory h5 = new ParkingHistory("\0=1+1", VehicleType.CAR, entry, exit, 5000L);
+        ParkingHistory h6 = new ParkingHistory("\tFOO", VehicleType.CAR, entry, exit, 5000L);
+        ParkingHistory h7 = new ParkingHistory("\rFOO", VehicleType.CAR, entry, exit, 5000L);
+
+        writer.writeAll(List.of(h1, h2, h3, h4, h5, h6, h7));
+
+        String content = Files.readString(testCsvFile);
+        assertThat(content).contains("'   =1+1");
+        assertThat(content).contains("'\t+1+1");
+        assertThat(content).contains("\"'\r=1+1\"");
+        assertThat(content).contains("\"'\n=1+1\"");
+        assertThat(content).contains("'\0=1+1");
+        assertThat(content).contains("'\tFOO");
+        assertThat(content).contains("\"'\rFOO\"");
+    }
+
+    @Test
+    void shouldEscapeAndSanitizeCombinedFormulaAndSpecialCharacters() throws IOException {
+        LocalDateTime entry = LocalDateTime.of(2026, 11, 13, 10, 0, 0);
+        LocalDateTime exit = LocalDateTime.of(2026, 11, 13, 11, 0, 0);
+
+        ParkingHistory h1 = new ParkingHistory("=SUM(1,2),10", VehicleType.CAR, entry, exit, 5000L);
+        ParkingHistory h2 = new ParkingHistory("=CMD(\"calc\")", VehicleType.CAR, entry, exit, 5000L);
+        ParkingHistory h3 = new ParkingHistory("=A1+\r\nB1", VehicleType.CAR, entry, exit, 5000L);
+
+        writer.writeAll(List.of(h1, h2, h3));
+
+        String content = Files.readString(testCsvFile);
+        // Formula prefixed with ' AND quoted/escaped properly for RFC 4180
+        assertThat(content).contains("\"'=SUM(1,2),10\"");
+        assertThat(content).contains("\"'=CMD(\"\"calc\"\")\"");
+        assertThat(content).contains("\"'=A1+\r\nB1\"");
+    }
+
+    @Test
+    void shouldLeaveNormalLicensePlatesUnprefixed() throws IOException {
+        LocalDateTime entry = LocalDateTime.of(2026, 11, 13, 10, 0, 0);
+        LocalDateTime exit = LocalDateTime.of(2026, 11, 13, 11, 0, 0);
+
+        ParkingHistory h1 = new ParkingHistory("B 1234 XYZ", VehicleType.CAR, entry, exit, 5000L);
+        ParkingHistory h2 = new ParkingHistory("DK 9999 AA", VehicleType.MOTORCYCLE, entry, exit, 3000L);
+        ParkingHistory h3 = new ParkingHistory("   B 1234 XYZ", VehicleType.CAR, entry, exit, 5000L);
+
+        writer.writeAll(List.of(h1, h2, h3));
+
+        String content = Files.readString(testCsvFile);
+        assertThat(content).contains("B 1234 XYZ,1,2026-11-13T10:00,2026-11-13T11:00,5000");
+        assertThat(content).contains("DK 9999 AA,2,2026-11-13T10:00,2026-11-13T11:00,3000");
+        assertThat(content).contains("   B 1234 XYZ,1,2026-11-13T10:00,2026-11-13T11:00,5000");
+    }
+
+    @Test
+    void shouldSanitizeFormulaDirectly() {
+        assertThat(writer.sanitizeFormula(null)).isNull();
+        assertThat(writer.sanitizeFormula("")).isEqualTo("");
+        assertThat(writer.sanitizeFormula("   ")).isEqualTo("   ");
+        assertThat(writer.sanitizeFormula("B 1234 XYZ")).isEqualTo("B 1234 XYZ");
+        assertThat(writer.sanitizeFormula("=cmd")).isEqualTo("'=cmd");
+        assertThat(writer.sanitizeFormula("+cmd")).isEqualTo("'+cmd");
+        assertThat(writer.sanitizeFormula("-cmd")).isEqualTo("'-cmd");
+        assertThat(writer.sanitizeFormula("@cmd")).isEqualTo("'@cmd");
+        assertThat(writer.sanitizeFormula("\tcmd")).isEqualTo("'\tcmd");
+        assertThat(writer.sanitizeFormula("\rcmd")).isEqualTo("'\rcmd");
+        assertThat(writer.sanitizeFormula("  =cmd")).isEqualTo("'  =cmd");
+        assertThat(writer.sanitizeFormula("  +cmd")).isEqualTo("'  +cmd");
+        assertThat(writer.sanitizeFormula("  -cmd")).isEqualTo("'  -cmd");
+        assertThat(writer.sanitizeFormula("  @cmd")).isEqualTo("'  @cmd");
+        assertThat(writer.sanitizeFormula("  plain")).isEqualTo("  plain");
+    }
+
+    @Test
     void shouldThrowParkingHistoryExceptionOnIoError() {
         Path directoryAsFile = tempDir.resolve("dir_as_file");
         try {

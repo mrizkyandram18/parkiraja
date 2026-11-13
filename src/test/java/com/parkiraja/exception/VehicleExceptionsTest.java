@@ -25,5 +25,12 @@ class VehicleExceptionsTest {
 
         DuplicateReservationException ex6 = new DuplicateReservationException("Duplicate reservation");
         assertThat(ex6.getMessage()).isEqualTo("Duplicate reservation");
+
+        ParkingHistoryException ex7 = new ParkingHistoryException("History write failed");
+        assertThat(ex7.getMessage()).isEqualTo("History write failed");
+
+        ParkingHistoryException ex8 = new ParkingHistoryException("History write failed with cause", new RuntimeException("IO"));
+        assertThat(ex8.getMessage()).isEqualTo("History write failed with cause");
+        assertThat(ex8.getCause()).isNotNull();
     }
 }

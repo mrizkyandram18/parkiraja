@@ -1,8 +1,11 @@
 package com.parkiraja.service;
 
 import com.parkiraja.dto.CheckInRequest;
+import com.parkiraja.dto.CheckOutRequest;
+import com.parkiraja.dto.CheckOutResponse;
 import com.parkiraja.dto.VehicleResponse;
 import com.parkiraja.entity.ParkingCapacity;
+import com.parkiraja.entity.ParkingHistory;
 import com.parkiraja.entity.ParkingReservation;
 import com.parkiraja.entity.ParkingSession;
 import com.parkiraja.entity.VehicleType;
@@ -11,11 +14,17 @@ import com.parkiraja.exception.DuplicateVehicleException;
 import com.parkiraja.exception.ParkingLotFullException;
 import com.parkiraja.exception.VehicleNotFoundException;
 import com.parkiraja.repository.ParkingCapacityRepository;
+import com.parkiraja.repository.ParkingHistoryRepository;
 import com.parkiraja.repository.ParkingReservationRepository;
 import com.parkiraja.repository.ParkingSessionRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.Locale;
 import java.util.Optional;
@@ -23,16 +32,24 @@ import java.util.Optional;
 @Service
 public class VehicleService {
 
+    private static final Logger log = LoggerFactory.getLogger(VehicleService.class);
+
     private final ParkingCapacityRepository parkingCapacityRepository;
     private final ParkingSessionRepository parkingSessionRepository;
     private final ParkingReservationRepository parkingReservationRepository;
+    private final ParkingHistoryRepository parkingHistoryRepository;
+    private final ParkingHistoryWriter parkingHistoryWriter;
 
     public VehicleService(ParkingCapacityRepository parkingCapacityRepository,
                           ParkingSessionRepository parkingSessionRepository,
-                          ParkingReservationRepository parkingReservationRepository) {
+                          ParkingReservationRepository parkingReservationRepository,
+                          ParkingHistoryRepository parkingHistoryRepository,
+                          ParkingHistoryWriter parkingHistoryWriter) {
         this.parkingCapacityRepository = parkingCapacityRepository;
         this.parkingSessionRepository = parkingSessionRepository;
         this.parkingReservationRepository = parkingReservationRepository;
+        this.parkingHistoryRepository = parkingHistoryRepository;
+        this.parkingHistoryWriter = parkingHistoryWriter;
     }
 
     @Transactional
@@ -82,5 +99,75 @@ public class VehicleService {
                         session.getEntryTime()
                 ))
                 .orElseThrow(() -> new VehicleNotFoundException("Vehicle with license plate " + normalizedPlate + " is not actively parked"));
+    }
+
+    @Transactional
+    public CheckOutResponse checkOut(CheckOutRequest request) {
+        if (request == null || request.licensePlate() == null || request.licensePlate().trim().isBlank()) {
+            throw new VehicleNotFoundException("Vehicle is not actively parked");
+        }
+        String normalizedPlate = request.licensePlate().trim().toUpperCase(Locale.ROOT);
+
+        parkingCapacityRepository.findByIdForUpdate(ParkingCapacity.SINGLETON_ID)
+                .orElseThrow(() -> new CapacityNotFoundException("Parking capacity has not been configured"));
+
+        ParkingSession session = parkingSessionRepository.findByLicensePlate(normalizedPlate)
+                .orElseThrow(() -> new VehicleNotFoundException("Vehicle with license plate " + normalizedPlate + " is not actively parked"));
+
+        LocalDateTime exitTime = LocalDateTime.now();
+        long durationHours = calculateDurationHours(session.getEntryTime(), exitTime);
+        long hourlyRate = session.getVehicleType().getHourlyRate();
+        long totalFee = durationHours * hourlyRate;
+
+        ParkingHistory history = new ParkingHistory(
+                session.getLicensePlate(),
+                session.getVehicleType(),
+                session.getEntryTime(),
+                exitTime,
+                totalFee
+        );
+        parkingHistoryRepository.save(history);
+
+        parkingSessionRepository.delete(session);
+
+        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    try {
+                        parkingHistoryWriter.syncFromDatabase();
+                    } catch (Exception e) {
+                        log.error("Failed to synchronize parking history CSV after transaction commit", e);
+                    }
+                }
+            });
+        } else {
+            try {
+                parkingHistoryWriter.syncFromDatabase();
+            } catch (Exception e) {
+                log.error("Failed to synchronize parking history CSV", e);
+            }
+        }
+
+        return new CheckOutResponse(
+                session.getLicensePlate(),
+                session.getVehicleType().getCode(),
+                session.getEntryTime(),
+                exitTime,
+                durationHours,
+                hourlyRate,
+                totalFee
+        );
+    }
+
+    public long calculateDurationHours(LocalDateTime entryTime, LocalDateTime exitTime) {
+        if (entryTime == null || exitTime == null) {
+            return 1L;
+        }
+        long totalSeconds = Duration.between(entryTime, exitTime).getSeconds();
+        if (totalSeconds <= 0) {
+            return 1L;
+        }
+        return (totalSeconds + 3599) / 3600;
     }
 }

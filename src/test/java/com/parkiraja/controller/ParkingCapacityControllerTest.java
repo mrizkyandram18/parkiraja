@@ -123,4 +123,15 @@ class ParkingCapacityControllerTest {
                 .andExpect(jsonPath("$.error").value("Bad Request"))
                 .andExpect(jsonPath("$.message").value("Invalid request payload"));
     }
+
+    @Test
+    void shouldReturn500WhenGenericExceptionOccurs() throws Exception {
+        when(capacityService.getCapacity()).thenThrow(new RuntimeException("Unexpected server error"));
+
+        mockMvc.perform(get("/api/v1/parking/capacity"))
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.status").value(500))
+                .andExpect(jsonPath("$.error").value("Internal Server Error"))
+                .andExpect(jsonPath("$.message").value("Unexpected server error"));
+    }
 }

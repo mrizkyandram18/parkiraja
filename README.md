@@ -223,9 +223,10 @@ For complete test breakdown and coverage reports, see the [Testing Documentation
   - `BUNDLE` Line Coverage: $\ge 90\%$
   - `SOURCEFILE` Line Coverage: $\ge 90\%$
 - **Test Breakdown**:
-  - 40 Controller slice tests (`@WebMvcTest`)
-  - 62 Service & Writer unit tests (JUnit 5 + Mockito)
-  - 52 End-to-end integration tests (`@SpringBootTest` with in-memory H2)
+  - 32 Controller slice tests (`@WebMvcTest`)
+  - 48 Service & Writer unit tests (JUnit 5 + Mockito)
+  - 53 End-to-end integration tests (`@SpringBootTest` with in-memory H2)
+  - 21 Domain, Exception & Context tests (DTOs, Entities, Exception Handlers, Context)
 
 ---
 
@@ -235,7 +236,7 @@ For complete test breakdown and coverage reports, see the [Testing Documentation
 parkiraja/
 ├── .github/
 │   └── workflows/
-│       └── maven.yml                   # GitHub Actions CI build & verification
+│       └── ci.yml                      # GitHub Actions CI build & verification
 ├── data/
 │   ├── parkiraja.mv.db                 # Durable H2 database file (runtime, git-ignored)
 │   └── parking_history.csv             # Exported parking history CSV report

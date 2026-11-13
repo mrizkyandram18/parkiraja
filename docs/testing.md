@@ -40,21 +40,21 @@ flowchart TD
 
 | Test Class | Category | Test Count | Scope Verified |
 |---|---|:---:|---|
-| `ParkingCapacityControllerTest` | Controller Slice | 10 | Capacity PUT/GET HTTP contracts, validation errors, error handling. |
-| `ParkingReservationControllerTest` | Controller Slice | 10 | Reservation POST/GET HTTP contracts, blank license plate validation. |
-| `VehicleControllerTest` | Controller Slice | 20 | Check-in, check-out, vehicle query endpoints, validation constraints. |
-| `ParkingCapacityServiceTest` | Service Unit | 11 | Capacity logic, singleton update, active occupancy threshold validation. |
-| `ReservationServiceTest` | Service Unit | 14 | Reservation slot booking, conflict checks, case-insensitive normalization. |
+| `ParkingCapacityControllerTest` | Controller Slice | 9 | Capacity PUT/GET HTTP contracts, validation errors, error handling. |
+| `ParkingReservationControllerTest` | Controller Slice | 8 | Reservation POST/GET HTTP contracts, blank license plate validation. |
+| `VehicleControllerTest` | Controller Slice | 15 | Check-in, check-out, vehicle query endpoints, validation constraints. |
+| `ParkingCapacityServiceTest` | Service Unit | 8 | Capacity logic, singleton update, active occupancy threshold validation. |
+| `ReservationServiceTest` | Service Unit | 9 | Reservation slot booking, conflict checks, case-insensitive normalization. |
 | `VehicleServiceTest` | Service Unit | 17 | Check-in/check-out logic, duration rounding, post-commit CSV hooks. |
-| `ParkingHistoryWriterTest` | Service Unit | 20 | CSV generation, RFC 4180 escaping, formula injection mitigation, startup sync. |
-| `ParkingCapacityIntegrationTest` | Spring Boot Integration | 6 | Full persistence integration for capacity lifecycle. |
-| `ParkingReservationIntegrationTest` | Spring Boot Integration | 17 | Full persistence integration for advance booking lifecycle. |
-| `VehicleIntegrationTest` | Spring Boot Integration | 16 | Vehicle check-in, capacity decrement, session queries in H2. |
-| `VehicleCheckoutIntegrationTest` | Spring Boot Integration | 13 | End-to-end checkout, fee calculation, history persistence, CSV export. |
-| `GlobalExceptionHandlerTest` | Exception Unit | 13 | HTTP 400/404/409/500 mapping, error payload formatting, error masking. |
-| `VehicleExceptionsTest` | Exception Unit | 6 | Custom domain exception constructors and error messages. |
-| DTO & Entity Tests | Domain Unit | 17 | Record accessors, entity getters/setters, `VehicleType` enum mapping. |
-| `ParkirajaApplicationTests` | Context | 1 | Spring application context startup and bean wiring. |
+| `ParkingHistoryWriterTest` | Service Unit | 14 | CSV generation, RFC 4180 escaping, formula injection mitigation, startup sync. |
+| `ParkingCapacityIntegrationTest` | Spring Boot Integration | 3 | Full persistence integration for capacity lifecycle. |
+| `ParkingReservationIntegrationTest` | Spring Boot Integration | 18 | Full persistence integration for advance booking lifecycle. |
+| `VehicleIntegrationTest` | Spring Boot Integration | 11 | Vehicle check-in, capacity decrement, session queries in H2. |
+| `VehicleCheckoutIntegrationTest` | Spring Boot Integration | 21 | End-to-end checkout, fee calculation, history persistence, CSV export. |
+| `GlobalExceptionHandlerTest` | Exception Unit | 5 | HTTP 400/404/409/500 mapping, error payload formatting, error masking. |
+| `VehicleExceptionsTest` | Exception Unit | 1 | Custom domain exception constructors and error messages. |
+| DTO & Entity Tests | Domain Unit | 13 | Record accessors (6 tests), entity getters/setters & enum mapping (7 tests). |
+| `ParkirajaApplicationTests` | Context | 2 | Spring application context startup and bean wiring. |
 | **Total** | | **154** | **100% Passing** |
 
 ---

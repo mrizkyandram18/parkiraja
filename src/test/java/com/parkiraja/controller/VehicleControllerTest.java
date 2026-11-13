@@ -1,11 +1,14 @@
 package com.parkiraja.controller;
 
 import com.parkiraja.dto.CheckInRequest;
+import com.parkiraja.dto.CheckOutRequest;
+import com.parkiraja.dto.CheckOutResponse;
 import com.parkiraja.dto.VehicleResponse;
 import com.parkiraja.exception.CapacityNotFoundException;
 import com.parkiraja.exception.DuplicateVehicleException;
 import com.parkiraja.exception.GlobalExceptionHandler;
 import com.parkiraja.exception.InvalidCapacityException;
+import com.parkiraja.exception.ParkingHistoryException;
 import com.parkiraja.exception.ParkingLotFullException;
 import com.parkiraja.exception.VehicleNotFoundException;
 import com.parkiraja.service.VehicleService;
@@ -192,5 +195,63 @@ class VehicleControllerTest {
                 .andExpect(jsonPath("$.message").value("Vehicle with license plate UNKNOWN is not actively parked"));
 
         verify(vehicleService).getVehicle("UNKNOWN");
+    }
+
+    @Test
+    void shouldReturn200WhenCheckOutSuccess() throws Exception {
+        LocalDateTime entryTime = LocalDateTime.now().minusHours(2);
+        LocalDateTime exitTime = LocalDateTime.now();
+        when(vehicleService.checkOut(any(CheckOutRequest.class)))
+                .thenReturn(new CheckOutResponse("B 1234 XYZ", 1, entryTime, exitTime, 2, 5000L, 10000L));
+
+        mockMvc.perform(post("/api/v1/parking/check-out")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"licensePlate\": \"B 1234 XYZ\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.licensePlate").value("B 1234 XYZ"))
+                .andExpect(jsonPath("$.vehicleType").value(1))
+                .andExpect(jsonPath("$.entryTime").isNotEmpty())
+                .andExpect(jsonPath("$.exitTime").isNotEmpty())
+                .andExpect(jsonPath("$.durationHours").value(2))
+                .andExpect(jsonPath("$.hourlyRate").value(5000))
+                .andExpect(jsonPath("$.totalFee").value(10000));
+
+        verify(vehicleService).checkOut(any(CheckOutRequest.class));
+    }
+
+    @Test
+    void shouldReturn400WhenCheckOutLicensePlateIsBlank() throws Exception {
+        mockMvc.perform(post("/api/v1/parking/check-out")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"licensePlate\": \"   \"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status").value(400))
+                .andExpect(jsonPath("$.message").value("License plate must not be blank"));
+    }
+
+    @Test
+    void shouldReturn404WhenCheckOutVehicleNotFound() throws Exception {
+        when(vehicleService.checkOut(any(CheckOutRequest.class)))
+                .thenThrow(new VehicleNotFoundException("Vehicle with license plate B 9999 NON is not actively parked"));
+
+        mockMvc.perform(post("/api/v1/parking/check-out")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"licensePlate\": \"B 9999 NON\"}"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.status").value(404))
+                .andExpect(jsonPath("$.message").value("Vehicle with license plate B 9999 NON is not actively parked"));
+    }
+
+    @Test
+    void shouldReturn500WhenParkingHistoryExceptionOccurs() throws Exception {
+        when(vehicleService.checkOut(any(CheckOutRequest.class)))
+                .thenThrow(new ParkingHistoryException("Failed to record parking history to CSV"));
+
+        mockMvc.perform(post("/api/v1/parking/check-out")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"licensePlate\": \"B 1234 XYZ\"}"))
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.status").value(500))
+                .andExpect(jsonPath("$.message").value("Failed to record parking history to CSV"));
     }
 }

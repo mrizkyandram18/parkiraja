@@ -1,6 +1,8 @@
 package com.parkiraja.controller;
 
 import com.parkiraja.dto.CheckInRequest;
+import com.parkiraja.dto.CheckOutRequest;
+import com.parkiraja.dto.CheckOutResponse;
 import com.parkiraja.dto.VehicleResponse;
 import com.parkiraja.service.VehicleService;
 import jakarta.validation.Valid;
@@ -27,6 +29,12 @@ public class VehicleController {
     public ResponseEntity<VehicleResponse> checkIn(@Valid @RequestBody CheckInRequest request) {
         VehicleResponse response = vehicleService.checkIn(request);
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
+    }
+
+    @PostMapping("/check-out")
+    public ResponseEntity<CheckOutResponse> checkOut(@Valid @RequestBody CheckOutRequest request) {
+        CheckOutResponse response = vehicleService.checkOut(request);
+        return ResponseEntity.ok(response);
     }
 
     @GetMapping("/vehicles/{licensePlate}")

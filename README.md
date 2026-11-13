@@ -55,3 +55,20 @@ mvn spring-boot:run
 ```
 
 The application starts by default on port `8080`.
+
+## Billing Rules & Business Assumptions
+
+Parking fees are calculated at vehicle checkout based on vehicle type rates:
+- **CAR (code 1)**: IDR 5,000 per hour
+- **MOTORCYCLE (code 2)**: IDR 3,000 per hour
+
+### Fractional-Hour Rounding Assumption
+Because the initial assignment specification does not specify fractional-hour rate pro-rating or grace periods:
+1. **Ceiling Rounding**: Any partial hour parked is rounded up to the next full hour.
+2. **Minimum Charge**: Minimum billable duration is one hour (e.g., parking for 15 minutes is billed as 1 hour).
+3. **Exact Calculation**:
+   - 15 minutes $\rightarrow$ 1 billed hour
+   - 60 minutes $\rightarrow$ 1 billed hour
+   - 61 minutes $\rightarrow$ 2 billed hours
+   - 2 hours 15 minutes $\rightarrow$ 3 billed hours
+4. **Transaction History**: Every completed checkout is persisted to `data/parking_history.csv` before the parking session is cleared.

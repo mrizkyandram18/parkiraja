@@ -1,6 +1,8 @@
 package com.parkiraja.service;
 
 import com.parkiraja.dto.CheckInRequest;
+import com.parkiraja.dto.CheckOutRequest;
+import com.parkiraja.dto.CheckOutResponse;
 import com.parkiraja.dto.VehicleResponse;
 import com.parkiraja.entity.ParkingCapacity;
 import com.parkiraja.entity.ParkingReservation;
@@ -41,6 +43,9 @@ class VehicleServiceTest {
 
     @Mock
     private ParkingReservationRepository parkingReservationRepository;
+
+    @Mock
+    private ParkingHistoryWriter parkingHistoryWriter;
 
     @InjectMocks
     private VehicleService vehicleService;
@@ -197,5 +202,109 @@ class VehicleServiceTest {
                 () -> vehicleService.getVehicle("   ")
         );
         assertThat(exBlank.getMessage()).isEqualTo("Vehicle is not actively parked");
+    }
+
+    @Test
+    void shouldCalculateDurationHoursCorrectly() {
+        LocalDateTime base = LocalDateTime.of(2026, 11, 13, 10, 0, 0);
+
+        // 15 minutes -> 1 hour
+        assertThat(vehicleService.calculateDurationHours(base, base.plusMinutes(15))).isEqualTo(1L);
+        // Exactly 60 minutes -> 1 hour
+        assertThat(vehicleService.calculateDurationHours(base, base.plusMinutes(60))).isEqualTo(1L);
+        // 61 minutes -> 2 hours
+        assertThat(vehicleService.calculateDurationHours(base, base.plusMinutes(61))).isEqualTo(2L);
+        // 2 hours 15 minutes -> 3 hours
+        assertThat(vehicleService.calculateDurationHours(base, base.plusHours(2).plusMinutes(15))).isEqualTo(3L);
+        // Exact 4 hours -> 4 hours
+        assertThat(vehicleService.calculateDurationHours(base, base.plusHours(4))).isEqualTo(4L);
+        // 0 seconds -> 1 hour minimum
+        assertThat(vehicleService.calculateDurationHours(base, base)).isEqualTo(1L);
+        // Negative / null cases -> 1 hour minimum
+        assertThat(vehicleService.calculateDurationHours(base, base.minusMinutes(10))).isEqualTo(1L);
+        assertThat(vehicleService.calculateDurationHours(null, base)).isEqualTo(1L);
+        assertThat(vehicleService.calculateDurationHours(base, null)).isEqualTo(1L);
+    }
+
+    @Test
+    void shouldCheckOutCarSuccessfullyAndPersistHistory() {
+        LocalDateTime entryTime = LocalDateTime.now().minusHours(2);
+        ParkingSession session = new ParkingSession("B 1234 XYZ", VehicleType.CAR, entryTime);
+        ParkingCapacity capacity = new ParkingCapacity(ParkingCapacity.SINGLETON_ID, 10, LocalDateTime.now());
+
+        when(parkingCapacityRepository.findByIdForUpdate(ParkingCapacity.SINGLETON_ID)).thenReturn(Optional.of(capacity));
+        when(parkingSessionRepository.findByLicensePlate("B 1234 XYZ")).thenReturn(Optional.of(session));
+
+        CheckOutResponse response = vehicleService.checkOut(new CheckOutRequest("  b 1234 xyz  "));
+
+        assertThat(response.licensePlate()).isEqualTo("B 1234 XYZ");
+        assertThat(response.vehicleType()).isEqualTo(1);
+        assertThat(response.entryTime()).isEqualTo(entryTime);
+        assertThat(response.exitTime()).isNotNull();
+        assertThat(response.durationHours()).isGreaterThanOrEqualTo(2L);
+        assertThat(response.hourlyRate()).isEqualTo(5000L);
+        assertThat(response.totalFee()).isEqualTo(response.durationHours() * 5000L);
+
+        verify(parkingHistoryWriter).append(
+                org.mockito.ArgumentMatchers.eq("B 1234 XYZ"),
+                org.mockito.ArgumentMatchers.eq(1),
+                org.mockito.ArgumentMatchers.eq(entryTime),
+                any(LocalDateTime.class),
+                org.mockito.ArgumentMatchers.eq(response.totalFee())
+        );
+        verify(parkingSessionRepository).delete(session);
+    }
+
+    @Test
+    void shouldCheckOutMotorcycleSuccessfully() {
+        LocalDateTime entryTime = LocalDateTime.now().minusMinutes(45); // 45 mins -> 1 hour
+        ParkingSession session = new ParkingSession("D 5678 ABC", VehicleType.MOTORCYCLE, entryTime);
+        ParkingCapacity capacity = new ParkingCapacity(ParkingCapacity.SINGLETON_ID, 5, LocalDateTime.now());
+
+        when(parkingCapacityRepository.findByIdForUpdate(ParkingCapacity.SINGLETON_ID)).thenReturn(Optional.of(capacity));
+        when(parkingSessionRepository.findByLicensePlate("D 5678 ABC")).thenReturn(Optional.of(session));
+
+        CheckOutResponse response = vehicleService.checkOut(new CheckOutRequest("D 5678 ABC"));
+
+        assertThat(response.licensePlate()).isEqualTo("D 5678 ABC");
+        assertThat(response.vehicleType()).isEqualTo(2);
+        assertThat(response.durationHours()).isEqualTo(1L);
+        assertThat(response.hourlyRate()).isEqualTo(3000L);
+        assertThat(response.totalFee()).isEqualTo(3000L);
+
+        verify(parkingSessionRepository).delete(session);
+    }
+
+    @Test
+    void shouldThrowCapacityNotFoundExceptionOnCheckOutWhenCapacityNotConfigured() {
+        when(parkingCapacityRepository.findByIdForUpdate(ParkingCapacity.SINGLETON_ID)).thenReturn(Optional.empty());
+
+        CapacityNotFoundException exception = assertThrows(
+                CapacityNotFoundException.class,
+                () -> vehicleService.checkOut(new CheckOutRequest("B 1234 XYZ"))
+        );
+
+        assertThat(exception.getMessage()).isEqualTo("Parking capacity has not been configured");
+    }
+
+    @Test
+    void shouldThrowVehicleNotFoundExceptionOnCheckOutWhenSessionNotFound() {
+        ParkingCapacity capacity = new ParkingCapacity(ParkingCapacity.SINGLETON_ID, 10, LocalDateTime.now());
+        when(parkingCapacityRepository.findByIdForUpdate(ParkingCapacity.SINGLETON_ID)).thenReturn(Optional.of(capacity));
+        when(parkingSessionRepository.findByLicensePlate("B 9999 NON")).thenReturn(Optional.empty());
+
+        VehicleNotFoundException exception = assertThrows(
+                VehicleNotFoundException.class,
+                () -> vehicleService.checkOut(new CheckOutRequest("B 9999 NON"))
+        );
+
+        assertThat(exception.getMessage()).contains("B 9999 NON is not actively parked");
+    }
+
+    @Test
+    void shouldThrowVehicleNotFoundExceptionOnCheckOutWhenPlateIsBlankOrNull() {
+        assertThrows(VehicleNotFoundException.class, () -> vehicleService.checkOut(null));
+        assertThrows(VehicleNotFoundException.class, () -> vehicleService.checkOut(new CheckOutRequest(null)));
+        assertThrows(VehicleNotFoundException.class, () -> vehicleService.checkOut(new CheckOutRequest("   ")));
     }
 }

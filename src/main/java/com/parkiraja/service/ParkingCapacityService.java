@@ -25,6 +25,13 @@ public class ParkingCapacityService {
 
     @Transactional
     public CapacityResponse updateCapacity(CapacityRequest request) {
+        ParkingCapacity capacity = repository.findByIdForUpdate(ParkingCapacity.SINGLETON_ID)
+                .orElseGet(() -> new ParkingCapacity(
+                        ParkingCapacity.SINGLETON_ID,
+                        request.totalCapacity(),
+                        LocalDateTime.now()
+                ));
+
         long activeVehicleCount = parkingSessionRepository.count();
         if (request.totalCapacity() < activeVehicleCount) {
             throw new InvalidCapacityException(
@@ -32,17 +39,8 @@ public class ParkingCapacityService {
             );
         }
 
-        ParkingCapacity capacity = repository.findById(ParkingCapacity.SINGLETON_ID)
-                .map(existing -> {
-                    existing.setTotalCapacity(request.totalCapacity());
-                    existing.setUpdatedAt(LocalDateTime.now());
-                    return existing;
-                })
-                .orElseGet(() -> new ParkingCapacity(
-                        ParkingCapacity.SINGLETON_ID,
-                        request.totalCapacity(),
-                        LocalDateTime.now()
-                ));
+        capacity.setTotalCapacity(request.totalCapacity());
+        capacity.setUpdatedAt(LocalDateTime.now());
 
         ParkingCapacity saved = repository.save(capacity);
         return new CapacityResponse(saved.getTotalCapacity());

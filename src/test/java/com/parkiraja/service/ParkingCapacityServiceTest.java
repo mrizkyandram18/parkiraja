@@ -38,8 +38,8 @@ class ParkingCapacityServiceTest {
     @Test
     void shouldCreateCapacityWhenNotExists() {
         CapacityRequest request = new CapacityRequest(50);
+        when(repository.findByIdForUpdate(ParkingCapacity.SINGLETON_ID)).thenReturn(Optional.empty());
         when(parkingSessionRepository.count()).thenReturn(0L);
-        when(repository.findById(ParkingCapacity.SINGLETON_ID)).thenReturn(Optional.empty());
         when(repository.save(any(ParkingCapacity.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         CapacityResponse response = service.updateCapacity(request);
@@ -57,8 +57,8 @@ class ParkingCapacityServiceTest {
     void shouldUpdateCapacityWhenAlreadyExists() {
         ParkingCapacity existing = new ParkingCapacity(ParkingCapacity.SINGLETON_ID, 20, LocalDateTime.now().minusDays(1));
         CapacityRequest request = new CapacityRequest(50);
+        when(repository.findByIdForUpdate(ParkingCapacity.SINGLETON_ID)).thenReturn(Optional.of(existing));
         when(parkingSessionRepository.count()).thenReturn(10L);
-        when(repository.findById(ParkingCapacity.SINGLETON_ID)).thenReturn(Optional.of(existing));
         when(repository.save(existing)).thenReturn(existing);
 
         CapacityResponse response = service.updateCapacity(request);
@@ -71,6 +71,8 @@ class ParkingCapacityServiceTest {
     @Test
     void shouldThrowInvalidCapacityExceptionWhenNewCapacityLessThanActiveVehicles() {
         CapacityRequest request = new CapacityRequest(5);
+        when(repository.findByIdForUpdate(ParkingCapacity.SINGLETON_ID))
+                .thenReturn(Optional.of(new ParkingCapacity(ParkingCapacity.SINGLETON_ID, 20, LocalDateTime.now())));
         when(parkingSessionRepository.count()).thenReturn(10L);
 
         InvalidCapacityException exception = assertThrows(
@@ -79,6 +81,22 @@ class ParkingCapacityServiceTest {
         );
 
         assertThat(exception.getMessage()).contains("Total capacity cannot be less than current active vehicle count: 10");
+    }
+
+    @Test
+    void shouldAcquireLockBeforeCountingActiveVehiclesAndPersistWithinTransaction() {
+        ParkingCapacity existing = new ParkingCapacity(ParkingCapacity.SINGLETON_ID, 20, LocalDateTime.now().minusDays(1));
+        CapacityRequest request = new CapacityRequest(30);
+        when(repository.findByIdForUpdate(ParkingCapacity.SINGLETON_ID)).thenReturn(Optional.of(existing));
+        when(parkingSessionRepository.count()).thenReturn(5L);
+        when(repository.save(existing)).thenReturn(existing);
+
+        service.updateCapacity(request);
+
+        org.mockito.InOrder inOrder = org.mockito.Mockito.inOrder(repository, parkingSessionRepository);
+        inOrder.verify(repository).findByIdForUpdate(ParkingCapacity.SINGLETON_ID);
+        inOrder.verify(parkingSessionRepository).count();
+        inOrder.verify(repository).save(existing);
     }
 
     @Test

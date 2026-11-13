@@ -20,6 +20,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -306,5 +307,127 @@ class VehicleIntegrationTest {
         assertThat(successCount).isEqualTo(1);
         assertThat(conflictCount).isEqualTo(threadCount - 1);
         assertThat(sessionRepository.count()).isEqualTo(1);
+    }
+
+    @Test
+    void shouldMaintainCapacityInvariantWhenVehicleCheckInAndCapacityReductionRaceAtLimit() throws Exception {
+        // Initial capacity = 10, with 9 active vehicles parked
+        capacityRepository.save(new ParkingCapacity(ParkingCapacity.SINGLETON_ID, 10, LocalDateTime.now()));
+        for (int i = 1; i <= 9; i++) {
+            sessionRepository.save(new ParkingSession("B " + (1000 + i) + " INIT", VehicleType.CAR, LocalDateTime.now()));
+        }
+        assertThat(sessionRepository.count()).isEqualTo(9);
+
+        CyclicBarrier barrier = new CyclicBarrier(2);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+
+        Callable<Integer> checkInTask = () -> {
+            barrier.await();
+            MvcResult result = mockMvc.perform(post("/api/v1/parking/check-in")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"licensePlate\": \"B 9999 CON\", \"vehicleType\": 1}"))
+                    .andReturn();
+            return result.getResponse().getStatus();
+        };
+
+        Callable<Integer> capacityTask = () -> {
+            barrier.await();
+            MvcResult result = mockMvc.perform(put("/api/v1/parking/capacity")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"totalCapacity\": 9}"))
+                    .andReturn();
+            return result.getResponse().getStatus();
+        };
+
+        Future<Integer> checkInFuture = executor.submit(checkInTask);
+        Future<Integer> capacityFuture = executor.submit(capacityTask);
+        executor.shutdown();
+
+        int checkInStatus = checkInFuture.get();
+        int capacityStatus = capacityFuture.get();
+
+        // One must succeed, the other must fail depending on transaction serialization order
+        // Case A: check-in wins (201 Created), capacity reduction fails because count is now 10 (400 Bad Request)
+        // Case B: capacity reduction wins (200 OK), check-in fails because capacity is now 9 (409 Conflict)
+        assertThat((checkInStatus == 201 && capacityStatus == 400)
+                || (checkInStatus == 409 && capacityStatus == 200)).isTrue();
+
+        // Verify the final persisted database state: must NEVER have 10 vehicles with capacity 9
+        ParkingCapacity persistedCapacity = capacityRepository.findById(ParkingCapacity.SINGLETON_ID).orElseThrow();
+        long persistedCount = sessionRepository.count();
+
+        assertThat(persistedCapacity.getTotalCapacity()).isGreaterThanOrEqualTo((int) persistedCount);
+
+        if (checkInStatus == 201) {
+            assertThat(persistedCapacity.getTotalCapacity()).isEqualTo(10);
+            assertThat(persistedCount).isEqualTo(10);
+            assertThat(sessionRepository.existsByLicensePlate("B 9999 CON")).isTrue();
+        } else {
+            assertThat(persistedCapacity.getTotalCapacity()).isEqualTo(9);
+            assertThat(persistedCount).isEqualTo(9);
+            assertThat(sessionRepository.existsByLicensePlate("B 9999 CON")).isFalse();
+        }
+    }
+
+    @Test
+    void shouldMaintainCapacityInvariantWhenCapacityUpdateAndMultipleVehicleCheckInsRace() throws Exception {
+        // Initial capacity = 10, with 5 active vehicles parked (5 slots available)
+        capacityRepository.save(new ParkingCapacity(ParkingCapacity.SINGLETON_ID, 10, LocalDateTime.now()));
+        for (int i = 1; i <= 5; i++) {
+            sessionRepository.save(new ParkingSession("B " + (2000 + i) + " INIT", VehicleType.CAR, LocalDateTime.now()));
+        }
+        assertThat(sessionRepository.count()).isEqualTo(5);
+
+        // 6 threads: 5 competing to check in vehicles, 1 attempting to reduce capacity to 5
+        int checkInThreads = 5;
+        int totalThreads = checkInThreads + 1;
+        CyclicBarrier barrier = new CyclicBarrier(totalThreads);
+        ExecutorService executor = Executors.newFixedThreadPool(totalThreads);
+        List<Callable<Integer>> tasks = new ArrayList<>();
+
+        for (int i = 0; i < checkInThreads; i++) {
+            final int index = i;
+            tasks.add(() -> {
+                barrier.await();
+                MvcResult result = mockMvc.perform(post("/api/v1/parking/check-in")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content("{\"licensePlate\": \"B " + (3000 + index) + " MULTI\", \"vehicleType\": 1}"))
+                        .andReturn();
+                return result.getResponse().getStatus();
+            });
+        }
+
+        tasks.add(() -> {
+            barrier.await();
+            MvcResult result = mockMvc.perform(put("/api/v1/parking/capacity")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"totalCapacity\": 5}"))
+                    .andReturn();
+            return result.getResponse().getStatus();
+        });
+
+        List<Future<Integer>> futures = executor.invokeAll(tasks);
+        executor.shutdown();
+
+        // Verify all tasks returned valid HTTP status codes
+        for (int i = 0; i < checkInThreads; i++) {
+            int status = futures.get(i).get();
+            assertThat(status == 201 || status == 409).isTrue();
+        }
+        int capacityStatus = futures.get(checkInThreads).get();
+        assertThat(capacityStatus == 200 || capacityStatus == 400).isTrue();
+
+        // Invariant check on persisted database state:
+        // Under no circumstances can active vehicles exceed total capacity
+        ParkingCapacity persistedCapacity = capacityRepository.findById(ParkingCapacity.SINGLETON_ID).orElseThrow();
+        long persistedCount = sessionRepository.count();
+
+        assertThat(persistedCapacity.getTotalCapacity()).isGreaterThanOrEqualTo((int) persistedCount);
+
+        // If capacity reduction succeeded (totalCapacity = 5), active vehicles must be exactly 5
+        if (capacityStatus == 200) {
+            assertThat(persistedCapacity.getTotalCapacity()).isEqualTo(5);
+            assertThat(persistedCount).isEqualTo(5);
+        }
     }
 }
